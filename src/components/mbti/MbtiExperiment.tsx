@@ -58,8 +58,19 @@ export default function MbtiExperiment() {
             <div className="mbti-questions">
               {answers.map((answer, index) => (
                 <div className="mbti-question" key={`${answer.axis}-${index}`}>
-                  <label htmlFor={`answer-${index}`}>{answer.prompt}</label>
-                  <p className="mbti-question-example">{answer.example}</p>
+                  <div className="mbti-question-heading">
+                    <label htmlFor={`answer-${index}`}>{answer.prompt}</label>
+                    <button
+                      aria-label={`${answer.prompt} 的具体例子`}
+                      className="mbti-tip-trigger"
+                      type="button"
+                    >
+                      ?
+                      <span className="mbti-tip" role="tooltip">
+                        {answer.example}
+                      </span>
+                    </button>
+                  </div>
                   <div className="mbti-slider-row">
                     <span>{answer.leftLabel}</span>
                     <input
