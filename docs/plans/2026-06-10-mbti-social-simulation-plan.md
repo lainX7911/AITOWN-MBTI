@@ -69,10 +69,14 @@ Later backend stages:
 
 ## Phase 4: AI Town Integration
 
-- [ ] Create temporary experiment worlds from a neutral role set: self, partner, friend, observer.
+- [ ] Create temporary experiment worlds from a neutral role set: self, inferred objects, optional observers.
+- [ ] Add a Convex `mbtiExperiments` table that stores the user profile, question, inferred role presets, status, and linked world ids.
+- [ ] Add a Convex mutation to create an experiment world instead of reusing the default AI Town world.
+- [ ] Add a custom `createMbtiAgent` input so the experiment can insert agents from user-provided MBTI and traits, not `data/characters.ts`.
 - [ ] Inject MBTI behavior weights into agent prompts without writing fixed story outcomes.
-- [ ] Generate generalized events from observed behavior instead of hand-authored plot triggers.
-- [ ] Run multiple short simulation branches and collect evidence.
+- [ ] Start short simulation windows and poll for real messages, archived conversations, generated memories, and generalized events.
+- [ ] Replace frontend-only generated chat/event/inner-thought samples with collected AI Town data.
+- [ ] Keep the fast local preview as an explicitly labeled draft mode, not as the final simulation.
 
 ## Phase 5: Evidence Report UI
 

@@ -52,9 +52,11 @@ export type Scenario = {
   };
 };
 
+export type ActorRole = 'partner' | 'friend' | 'coworker' | 'family' | 'ex' | 'ambiguous' | 'other';
+
 export type SocialActor = {
   id: string;
-  role: 'partner' | 'friend';
+  role: ActorRole;
   label: string;
   weights: Partial<MbtiWeights>;
   tendency: string;
@@ -62,9 +64,11 @@ export type SocialActor = {
 
 export type RolePreset = {
   enabled: boolean;
+  role: ActorRole;
   label: string;
   mbtiCode: string;
   traits: string;
+  reason: string;
 };
 
 export type SimulationRun = {

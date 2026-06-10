@@ -4,8 +4,8 @@ import {
   buildProfile,
   customScenario,
   defaultQuestion,
-  defaultRolePresets,
   defaultAnswers,
+  inferRolePresets,
   runSimulation,
 } from './mbtiModel';
 import { RolePreset, SimulationReport, SimulationRun, TestAnswer } from './types';
@@ -49,9 +49,11 @@ type StoredExperimentState = {
   answers?: TestAnswer[];
   question?: string;
   activeQuestion?: string;
-  rolePresets?: Record<'partner' | 'friend', RolePreset>;
+  rolePresets?: RolePreset[] | Record<'partner' | 'friend', RolePreset>;
   experimentScaleId?: string;
   activeReport?: SimulationReport;
+  runStartedAt?: number;
+  simulationMode?: 'preview' | 'town';
   history?: HistoryEntry[];
 };
 
@@ -68,15 +70,6 @@ function readStoredState(): StoredExperimentState {
   }
 }
 
-function defaultReport() {
-  return runSimulation(
-    buildProfile(defaultAnswers),
-    customScenario(defaultQuestion),
-    experimentScales[1].runCount,
-    defaultRolePresets,
-  );
-}
-
 export default function MbtiExperiment() {
   const [storedState] = useState(readStoredState);
   const [answers, setAnswers] = useState<TestAnswer[]>(storedState.answers ?? defaultAnswers);
@@ -84,22 +77,32 @@ export default function MbtiExperiment() {
   const [activeQuestion, setActiveQuestion] = useState(
     storedState.activeQuestion ?? storedState.question ?? defaultQuestion,
   );
-  const [rolePresets, setRolePresets] =
-    useState<Record<'partner' | 'friend', RolePreset>>(
-      storedState.rolePresets ?? defaultRolePresets,
-    );
+  const [rolePresets, setRolePresets] = useState<RolePreset[]>(
+    Array.isArray(storedState.rolePresets)
+      ? storedState.rolePresets
+      : inferRolePresets(storedState.question ?? defaultQuestion),
+  );
   const [experimentScale, setExperimentScale] = useState<ExperimentScale>(
     experimentScales.find((scale) => scale.id === storedState.experimentScaleId) ??
       experimentScales[1],
   );
-  const [activeReport, setActiveReport] = useState<SimulationReport>(
-    storedState.activeReport ?? defaultReport(),
+  const [activeReport, setActiveReport] = useState<SimulationReport | null>(
+    storedState.activeReport ?? null,
+  );
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(storedState.runStartedAt ?? null);
+  const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'complete'>(
+    storedState.activeReport ? 'complete' : 'idle',
+  );
+  const [simulationMode, setSimulationMode] = useState<'preview' | 'town'>(
+    storedState.simulationMode ?? 'preview',
   );
   const [history, setHistory] = useState<HistoryEntry[]>(storedState.history ?? []);
   const [activeStep, setActiveStep] = useState<Step>('test');
   const [selectedRunId, setSelectedRunId] = useState(1);
   const profile = useMemo(() => buildProfile(answers), [answers]);
-  const selectedRun = activeReport.runs.find((run) => run.id === selectedRunId) ?? activeReport.runs[0];
+  const selectedRun =
+    activeReport?.runs.find((run) => run.id === selectedRunId) ?? activeReport?.runs[0];
+  const hasPendingQuestion = question.trim() !== activeQuestion.trim();
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -110,11 +113,27 @@ export default function MbtiExperiment() {
         activeQuestion,
         rolePresets,
         experimentScaleId: experimentScale.id,
-        activeReport,
+        activeReport: activeReport ?? undefined,
+        runStartedAt: runStartedAt ?? undefined,
+        simulationMode,
         history,
       } satisfies StoredExperimentState),
     );
-  }, [activeQuestion, activeReport, answers, experimentScale.id, history, question, rolePresets]);
+  }, [
+    activeQuestion,
+    activeReport,
+    answers,
+    experimentScale.id,
+    history,
+    question,
+    rolePresets,
+    runStartedAt,
+    simulationMode,
+  ]);
+
+  useEffect(() => {
+    setRolePresets((current) => inferRolePresets(question, current));
+  }, [question]);
 
   function updateAnswer(index: number, value: number) {
     setAnswers((current) =>
@@ -124,40 +143,59 @@ export default function MbtiExperiment() {
     );
   }
 
-  function updateRole(role: 'partner' | 'friend', patch: Partial<RolePreset>) {
-    setRolePresets((current) => ({
-      ...current,
-      [role]: { ...current[role], ...patch },
-    }));
+  function updateRole(role: string, patch: Partial<RolePreset>) {
+    setRolePresets((current) =>
+      current.map((preset) => (preset.role === role ? { ...preset, ...patch } : preset)),
+    );
   }
 
   function startSimulation() {
     const nextQuestion = question.trim() || defaultQuestion;
+    const effectiveRolePresets = inferRolePresets(nextQuestion, rolePresets);
+    const startedAt = Date.now();
+    if (simulationMode === 'town') {
+      setActiveQuestion(nextQuestion);
+      setRolePresets(effectiveRolePresets);
+      setRunStartedAt(startedAt);
+      setRunStatus('idle');
+      setActiveReport(null);
+      setActiveStep('observe');
+      return;
+    }
+    setActiveQuestion(nextQuestion);
+    setRolePresets(effectiveRolePresets);
+    setRunStartedAt(startedAt);
+    setRunStatus('complete');
+    setActiveStep('observe');
     const nextReport = runSimulation(
       profile,
       customScenario(nextQuestion),
       experimentScale.runCount,
-      rolePresets,
+      effectiveRolePresets,
     );
     const nextHistoryEntry: HistoryEntry = {
-      id: `${Date.now()}`,
-      createdAt: Date.now(),
+      id: `${startedAt}`,
+      createdAt: startedAt,
       question: nextQuestion,
       profileCode: profile.code,
-      scaleLabel: experimentScale.label,
+      scaleLabel: `${experimentScale.label} · 快速预览`,
       report: nextReport,
     };
-    setActiveQuestion(nextQuestion);
     setActiveReport(nextReport);
     setSelectedRunId(nextReport.runs[0]?.id ?? 1);
     setHistory((current) => [nextHistoryEntry, ...current].slice(0, 12));
-    setActiveStep('observe');
+  }
+
+  function refreshInferredRoles() {
+    setRolePresets((current) => inferRolePresets(question, current));
   }
 
   function restoreHistory(entry: HistoryEntry) {
     setQuestion(entry.question);
     setActiveQuestion(entry.question);
     setActiveReport(entry.report);
+    setRunStartedAt(entry.createdAt);
+    setRunStatus('complete');
     setSelectedRunId(entry.report.runs[0]?.id ?? 1);
     setActiveStep('observe');
   }
@@ -252,23 +290,53 @@ export default function MbtiExperiment() {
               onChange={(event) => setQuestion(event.target.value)}
               aria-label="自定义问题"
             />
-            <details className="mbti-role-settings">
-              <summary>附件设置：预设问题里的角色属性</summary>
-              <RoleEditor
-                role="partner"
-                title="关键对象"
-                value={rolePresets.partner}
-                onChange={(patch) => updateRole('partner', patch)}
-              />
-              <RoleEditor
-                role="friend"
-                title="朋友/旁观者"
-                value={rolePresets.friend}
-                onChange={(patch) => updateRole('friend', patch)}
-              />
-            </details>
+            <section className="mbti-role-settings">
+              <div className="mbti-role-settings-header">
+                <div>
+                  <h3>对象预设</h3>
+                  <p>
+                    根据你的问题自动识别涉及的人。你可以补充每个对象的 MBTI 或性格特征；
+                    不确定就保持默认。
+                  </p>
+                </div>
+                <button onClick={refreshInferredRoles} type="button">
+                  根据问题重新识别
+                </button>
+              </div>
+              {rolePresets.map((preset) => (
+                <RoleEditor
+                  key={preset.role}
+                  value={preset}
+                  onChange={(patch) => updateRole(preset.role, patch)}
+                />
+              ))}
+            </section>
             <div className="mbti-scale-picker">
-              <span className="mbti-scale-title">选择实验规模</span>
+              <span className="mbti-scale-title">选择实验方式</span>
+              <div className="mbti-mode-options">
+                <button
+                  data-active={simulationMode === 'preview'}
+                  onClick={() => setSimulationMode('preview')}
+                  type="button"
+                >
+                  <strong>快速预览</strong>
+                  <span>用本地模型估算倾向，适合调问题和检查设置，会立即出报告。</span>
+                </button>
+                <button
+                  data-active={simulationMode === 'town'}
+                  onClick={() => setSimulationMode('town')}
+                  type="button"
+                >
+                  <strong>小镇演化</strong>
+                  <span>把人格和对象导入 AI Town，由角色移动、对话、事件、记忆产生观察结果。</span>
+                </button>
+              </div>
+              {simulationMode === 'town' && (
+                <p className="mbti-warning mbti-mode-warning">
+                  小镇演化需要后端实验 world 接入；当前按钮会先展示待导入信息，不会生成假报告。
+                </p>
+              )}
+              <span className="mbti-scale-title">选择观察强度</span>
               <div className="mbti-scale-options">
                 {experimentScales.map((scale) => (
                   <button
@@ -285,7 +353,7 @@ export default function MbtiExperiment() {
               </div>
             </div>
             <button className="mbti-action" onClick={startSimulation} type="button">
-              启动多轮模拟
+              {simulationMode === 'preview' ? '生成快速预览报告' : '准备导入小镇演化'}
             </button>
           </section>
         )}
@@ -293,9 +361,58 @@ export default function MbtiExperiment() {
         {activeStep === 'observe' && (
         <section className="mbti-panel mt-5 mbti-report">
           <h2>3. 模拟观察</h2>
-          <p className="mbti-section-note">
-            当前问题：{activeQuestion}。本次为「{experimentScale.label}」。
-          </p>
+          <div className="mbti-run-status" data-status={runStatus}>
+            <strong>
+              {runStatus === 'running'
+                ? '模拟正在运行...'
+                : runStatus === 'complete'
+                  ? '模拟已完成'
+                  : '还没有启动模拟'}
+            </strong>
+            <span>
+              {runStatus === 'idle'
+                ? simulationMode === 'town'
+                  ? '小镇演化尚未接入后端。下面展示的是准备导入小镇的实验配置。'
+                  : '请先到“问题描述”填写问题并生成快速预览。'
+                : `当前问题：${activeQuestion}。本次为「${experimentScale.label}」。`}
+            </span>
+            {runStartedAt && <span>启动时间：{new Date(runStartedAt).toLocaleString()}</span>}
+            {hasPendingQuestion && (
+              <span className="mbti-warning">你已经修改了问题，但还没有重新启动模拟。</span>
+            )}
+          </div>
+          <div className="mbti-observe-actions">
+            <button onClick={() => setActiveStep('question')} type="button">
+              返回修改问题
+            </button>
+            <button onClick={startSimulation} type="button">
+              重新启动模拟
+            </button>
+          </div>
+          {runStatus === 'running' && (
+            <div className="mbti-running-bar" aria-label="模拟运行中">
+              <span />
+            </div>
+          )}
+          {runStatus === 'idle' && (
+            <div className="mbti-empty-state">
+              <p>
+                {simulationMode === 'town'
+                  ? '真实小镇演化应该创建实验 world、写入用户人格代理和对象代理，然后收集真实聊天、事件、内心独白。当前还未接入这条后端链路。'
+                  : '本页会在启动后显示行为分布、分支细节、聊天、事件和内心独白。'}
+              </p>
+              {simulationMode === 'town' && (
+                <ul>
+                  <li>用户人格：{profile.code}</li>
+                  <li>问题：{activeQuestion}</li>
+                  <li>识别对象：{rolePresets.map((role) => role.label).join('、')}</li>
+                  <li>观察强度：{experimentScale.label}</li>
+                </ul>
+              )}
+            </div>
+          )}
+          {activeReport && runStatus !== 'running' && (
+            <>
           <div className="mbti-distribution">
             {activeReport.distribution.map((item) => (
               <div className="mbti-distribution-row" key={item.action}>
@@ -350,6 +467,8 @@ export default function MbtiExperiment() {
             </div>
             {selectedRun && <RunDetail run={selectedRun} />}
           </div>
+            </>
+          )}
         </section>
         )}
 
@@ -411,12 +530,9 @@ function StepButton({
 }
 
 function RoleEditor({
-  title,
   value,
   onChange,
 }: {
-  role: 'partner' | 'friend';
-  title: string;
   value: RolePreset;
   onChange: (patch: Partial<RolePreset>) => void;
 }) {
@@ -428,8 +544,9 @@ function RoleEditor({
           type="checkbox"
           onChange={(event) => onChange({ enabled: event.target.checked })}
         />
-        启用{title}预设
+        启用「{value.label}」预设
       </label>
+      <p className="mbti-role-reason">{value.reason}</p>
       <div className="mbti-role-grid">
         <label>
           角色名称

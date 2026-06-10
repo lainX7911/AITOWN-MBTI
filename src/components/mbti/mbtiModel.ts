@@ -1,5 +1,6 @@
 import {
   BehaviorWeights,
+  ActorRole,
   MbtiWeights,
   Profile,
   RolePreset,
@@ -109,15 +110,19 @@ export const defaultQuestion = '如果亲密关系里对方一直不回消息，
 export const defaultRolePresets: Record<'partner' | 'friend', RolePreset> = {
   partner: {
     enabled: false,
+    role: 'partner',
     label: '关键对象',
     mbtiCode: 'INFP',
     traits: '',
+    reason: '默认关键对象',
   },
   friend: {
     enabled: false,
+    role: 'friend',
     label: '朋友/旁观者',
     mbtiCode: 'ENTP',
     traits: '',
+    reason: '默认朋友/旁观者',
   },
 };
 
@@ -183,6 +188,87 @@ export const friendProfiles: SocialActor[] = [
   },
 ];
 
+export function inferRolePresets(question: string, previous: RolePreset[] = []): RolePreset[] {
+  const text = question.trim();
+  const candidates: Array<{
+    role: ActorRole;
+    label: string;
+    mbtiCode: string;
+    reason: string;
+    words: string[];
+  }> = [
+    {
+      role: 'partner',
+      label: '伴侣',
+      mbtiCode: 'INFP',
+      reason: '问题里出现了伴侣/亲密关系相关对象。',
+      words: ['伴侣', '男朋友', '女朋友', '恋人', '对象', '亲密关系', '老公', '老婆'],
+    },
+    {
+      role: 'ambiguous',
+      label: '暧昧对象',
+      mbtiCode: 'ENFP',
+      reason: '问题里出现了暧昧、喜欢或关系未定义对象。',
+      words: ['暧昧', '喜欢的人', 'crush', '约会对象'],
+    },
+    {
+      role: 'friend',
+      label: '朋友',
+      mbtiCode: 'ENTP',
+      reason: '问题里出现了朋友或旁观建议者。',
+      words: ['朋友', '闺蜜', '兄弟', '同学', '室友'],
+    },
+    {
+      role: 'coworker',
+      label: '同事',
+      mbtiCode: 'ESTJ',
+      reason: '问题里出现了同事、上级或工作协作对象。',
+      words: ['同事', '上司', '领导', '老板', '客户', '工作', '项目'],
+    },
+    {
+      role: 'family',
+      label: '家人',
+      mbtiCode: 'ISFJ',
+      reason: '问题里出现了家庭成员。',
+      words: ['家人', '父母', '妈妈', '爸爸', '亲戚', '孩子'],
+    },
+    {
+      role: 'ex',
+      label: '前任',
+      mbtiCode: 'ISTP',
+      reason: '问题里出现了前任或旧关系。',
+      words: ['前任', '前男友', '前女友', '旧关系'],
+    },
+  ];
+  const inferred = candidates
+    .filter((candidate) => hasAny(text, candidate.words))
+    .map((candidate) => {
+      const existing = previous.find((item) => item.role === candidate.role);
+      return {
+        enabled: existing?.enabled ?? true,
+        role: candidate.role,
+        label: existing?.label || candidate.label,
+        mbtiCode: existing?.mbtiCode || candidate.mbtiCode,
+        traits: existing?.traits ?? '',
+        reason: candidate.reason,
+      };
+    });
+  if (inferred.length > 0) {
+    return inferred;
+  }
+  const existing = previous.find((item) => item.role === 'other');
+  return [
+    {
+      enabled: existing?.enabled ?? true,
+      role: 'other',
+      label: existing?.label || '对方',
+      mbtiCode: existing?.mbtiCode || 'INFP',
+      traits: existing?.traits ?? '',
+      reason: '暂未识别到明确关系词，先按“对方”处理。',
+    },
+  ];
+}
+
 export function buildProfile(answers: TestAnswer[]): Profile {
   const axisTotals = {
     ei: averageAxis(answers, 'ei'),
@@ -213,11 +299,14 @@ export function runSimulation(
   profile: Profile,
   scenario: Scenario,
   runCount = 48,
-  rolePresets: Record<'partner' | 'friend', RolePreset> = defaultRolePresets,
+  rolePresets: RolePreset[] | Record<'partner' | 'friend', RolePreset> = defaultRolePresets,
 ): SimulationReport {
   const runs: SimulationRun[] = [];
-  const partners = actorSet('partner', partnerProfiles, rolePresets.partner);
-  const friends = actorSet('friend', friendProfiles, rolePresets.friend);
+  const normalizedPresets = Array.isArray(rolePresets)
+    ? rolePresets
+    : [rolePresets.partner, rolePresets.friend];
+  const partners = actorSet('partner', partnerProfiles, normalizedPresets);
+  const friends = actorSet('friend', friendProfiles, normalizedPresets);
   for (let index = 0; index < runCount; index += 1) {
     const partner = partners[index % partners.length];
     const friend = friends[Math.floor(index / partners.length) % friends.length];
@@ -240,20 +329,22 @@ function averageAxis(answers: TestAnswer[], axis: TestAnswer['axis']) {
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 }
 
-function actorSet(role: 'partner' | 'friend', defaults: SocialActor[], preset: RolePreset) {
-  if (!preset.enabled) {
+function actorSet(role: 'partner' | 'friend', defaults: SocialActor[], presets: RolePreset[]) {
+  const relevantRoles: ActorRole[] =
+    role === 'partner' ? ['partner', 'ambiguous', 'coworker', 'family', 'ex', 'other'] : ['friend'];
+  const enabledPresets = presets.filter(
+    (preset) => preset.enabled && relevantRoles.includes(preset.role),
+  );
+  if (enabledPresets.length === 0) {
     return defaults;
   }
-  return [
-    {
-      id: `custom-${role}`,
-      role,
-      label: preset.label.trim() || (role === 'partner' ? '关键对象' : '朋友/旁观者'),
-      weights: mbtiToWeights(preset.mbtiCode),
-      tendency: preset.traits.trim() || `${preset.mbtiCode.toUpperCase()} 倾向，未补充额外性格特征。`,
-    },
-    ...defaults,
-  ];
+  return enabledPresets.map((preset) => ({
+    id: `custom-${preset.role}`,
+    role: preset.role,
+    label: preset.label.trim() || '对方',
+    weights: mbtiToWeights(preset.mbtiCode),
+    tendency: preset.traits.trim() || `${preset.mbtiCode.toUpperCase()} 倾向，未补充额外性格特征。`,
+  }));
 }
 
 function mbtiToWeights(code: string): Partial<MbtiWeights> {
