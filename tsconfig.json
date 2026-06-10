@@ -15,6 +15,7 @@
     "jsx": "preserve",
     "incremental": true,
     "allowImportingTsExtensions": true,
+    "types": ["jest", "node"],
     "plugins": [
       {
         "name": "next"
@@ -25,5 +26,5 @@
     }
   },
   "include": ["**/*.ts", "**/*.tsx", "**/*.js", "postcss.config.js"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "**/*.test.ts"]
 }

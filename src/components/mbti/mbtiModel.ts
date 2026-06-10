@@ -367,7 +367,77 @@ function simulateRun(
       `内部权重：情绪敏感 ${b.emotionalSensitivity}，闭环需求 ${b.closureNeed}，反刍 ${b.rumination}`,
       `行为选择：${action}`,
     ],
+    chat: buildChat(action, partner, friend),
+    events: buildEvents(action, partner, friend, Math.round(stress), Math.round(repair)),
+    innerThoughts: buildInnerThoughts(action, profile, Math.round(stress), Math.round(repair)),
   };
+}
+
+function buildChat(action: string, partner: SocialActor, friend: SocialActor) {
+  if (action === '直接追问关系状态') {
+    return [
+      { speaker: '我', text: '我想确认一下，你这段时间不回消息，是忙，还是我们之间有什么变化？' },
+      { speaker: partner.label, text: '我不是故意不回，只是压力大时会先退开。' },
+      { speaker: '我', text: '可以退开，但我需要知道这不是关系被悬着。' },
+    ];
+  }
+  if (action === '主动修复沟通') {
+    return [
+      { speaker: '我', text: '我不想把这件事放大，但也不想假装没受影响。' },
+      { speaker: partner.label, text: '我能理解，我先说清楚刚才发生了什么。' },
+      { speaker: '我', text: '好，我也会说我真正介意的部分。' },
+    ];
+  }
+  if (action === '先找朋友确认') {
+    return [
+      { speaker: '我', text: '我有点分不清这是事实问题，还是我自己想多了。' },
+      { speaker: friend.label, text: friend.id === 'analyst' ? '先列事实，不要直接推结论。' : '你先别一个人憋着，这件事确实会让人不舒服。' },
+      { speaker: '我', text: '我先把事实和感受分开，再决定要不要问。' },
+    ];
+  }
+  if (action === '退回独处消化') {
+    return [
+      { speaker: '我', text: '我现在不太适合马上聊，先缓一下。' },
+      { speaker: partner.label, text: '好，我晚点再找你。' },
+      { speaker: '我', text: '我需要一点时间确认自己真正介意的是什么。' },
+    ];
+  }
+  return [
+    { speaker: '我', text: '我先观察一下，不急着下判断。' },
+    { speaker: partner.label, text: '我知道这可能让你不安，我会尽量说清楚。' },
+    { speaker: '我', text: '如果后面还是这样，我会再明确提出来。' },
+  ];
+}
+
+function buildEvents(
+  action: string,
+  partner: SocialActor,
+  friend: SocialActor,
+  stress: number,
+  repair: number,
+) {
+  return [
+    `场景开始：关键对象为「${partner.label}」，旁观支持者为「${friend.label}」。`,
+    `压力读数：${stress}/100；修复动机：${repair}/100。`,
+    `行为事件：用户人格代理选择「${action}」。`,
+  ];
+}
+
+function buildInnerThoughts(action: string, profile: Profile, stress: number, repair: number) {
+  const base = `我是 ${profile.code} 倾向。压力 ${stress}/100，修复动机 ${repair}/100。`;
+  if (action === '直接追问关系状态') {
+    return [base, '我最难受的不是晚回复本身，而是状态悬着；问清楚至少能让我知道自己站在哪里。'];
+  }
+  if (action === '主动修复沟通') {
+    return [base, '我还想把关系往回拉一下，但需要对方真的听懂，而不是只把事情压下去。'];
+  }
+  if (action === '先找朋友确认') {
+    return [base, '我担心自己过度解读，所以先找一个外部视角帮我校准。'];
+  }
+  if (action === '退回独处消化') {
+    return [base, '我不想在情绪最满的时候把话说死，先退一步可能比较安全。'];
+  }
+  return [base, '现在证据还不够，我先观察，但会记住这个不舒服的点。'];
 }
 
 function aggregateReport(runs: SimulationRun[]): SimulationReport {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   buildProfile,
   customScenario,
@@ -7,7 +8,7 @@ import {
   defaultAnswers,
   runSimulation,
 } from './mbtiModel';
-import { RolePreset, SimulationReport, TestAnswer } from './types';
+import { RolePreset, SimulationReport, SimulationRun, TestAnswer } from './types';
 import './MbtiExperiment.css';
 
 const experimentScales = [
@@ -41,6 +42,8 @@ type HistoryEntry = {
   scaleLabel: string;
   report: SimulationReport;
 };
+
+type Step = 'test' | 'question' | 'observe' | 'history';
 
 type StoredExperimentState = {
   answers?: TestAnswer[];
@@ -93,7 +96,10 @@ export default function MbtiExperiment() {
     storedState.activeReport ?? defaultReport(),
   );
   const [history, setHistory] = useState<HistoryEntry[]>(storedState.history ?? []);
+  const [activeStep, setActiveStep] = useState<Step>('test');
+  const [selectedRunId, setSelectedRunId] = useState(1);
   const profile = useMemo(() => buildProfile(answers), [answers]);
+  const selectedRun = activeReport.runs.find((run) => run.id === selectedRunId) ?? activeReport.runs[0];
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -143,13 +149,17 @@ export default function MbtiExperiment() {
     };
     setActiveQuestion(nextQuestion);
     setActiveReport(nextReport);
+    setSelectedRunId(nextReport.runs[0]?.id ?? 1);
     setHistory((current) => [nextHistoryEntry, ...current].slice(0, 12));
+    setActiveStep('observe');
   }
 
   function restoreHistory(entry: HistoryEntry) {
     setQuestion(entry.question);
     setActiveQuestion(entry.question);
     setActiveReport(entry.report);
+    setSelectedRunId(entry.report.runs[0]?.id ?? 1);
+    setActiveStep('observe');
   }
 
   return (
@@ -172,9 +182,19 @@ export default function MbtiExperiment() {
           </section>
         </header>
 
-        <div className="mbti-grid">
+        <nav className="mbti-stepper" aria-label="实验步骤">
+          <StepButton activeStep={activeStep} id="test" label="人格测试" onSelect={setActiveStep} />
+          <StepButton activeStep={activeStep} id="question" label="问题描述" onSelect={setActiveStep} />
+          <StepButton activeStep={activeStep} id="observe" label="模拟观察" onSelect={setActiveStep} />
+          <StepButton activeStep={activeStep} id="history" label="历史记录" onSelect={setActiveStep} />
+        </nav>
+
+        {activeStep === 'test' && (
           <section className="mbti-panel">
             <h2>1. 人格权重测试</h2>
+            <p className="mbti-section-note">
+              这一步只负责保存你的人格权重。测试结果会自动保留，后面换问题也不用重测。
+            </p>
             <div className="mbti-questions">
               {answers.map((answer, index) => (
                 <div className="mbti-question" key={`${answer.axis}-${index}`}>
@@ -206,8 +226,13 @@ export default function MbtiExperiment() {
                 </div>
               ))}
             </div>
+            <button className="mbti-action" onClick={() => setActiveStep('question')} type="button">
+              下一步：描述问题
+            </button>
           </section>
+        )}
 
+        {activeStep === 'question' && (
           <section className="mbti-panel">
             <h2>2. 人格构成</h2>
             <div className="mbti-bars">
@@ -263,10 +288,11 @@ export default function MbtiExperiment() {
               启动多轮模拟
             </button>
           </section>
-        </div>
+        )}
 
+        {activeStep === 'observe' && (
         <section className="mbti-panel mt-5 mbti-report">
-          <h2>4. 多轮模拟报告</h2>
+          <h2>3. 模拟观察</h2>
           <p className="mbti-section-note">
             当前问题：{activeQuestion}。本次为「{experimentScale.label}」。
           </p>
@@ -303,10 +329,33 @@ export default function MbtiExperiment() {
               ))}
             </div>
           </div>
-        </section>
 
+          <div>
+            <h3>分支细节</h3>
+            <p className="mbti-section-note">
+              这里不是最终结论，而是某一次模拟如何走到该行为的观察样本。
+            </p>
+            <div className="mbti-run-selector">
+              {activeReport.runs.slice(0, 12).map((run) => (
+                <button
+                  className="mbti-run-select"
+                  data-active={run.id === selectedRun?.id}
+                  key={run.id}
+                  onClick={() => setSelectedRunId(run.id)}
+                  type="button"
+                >
+                  #{run.id} {run.action}
+                </button>
+              ))}
+            </div>
+            {selectedRun && <RunDetail run={selectedRun} />}
+          </div>
+        </section>
+        )}
+
+        {activeStep === 'history' && (
         <section className="mbti-panel mt-5">
-          <h2>5. 历史实验</h2>
+          <h2>4. 历史记录</h2>
           <p className="mbti-section-note">
             每次启动模拟都会保存问题和当时的报告摘要。点击一条可以回到那次结果。
           </p>
@@ -332,8 +381,32 @@ export default function MbtiExperiment() {
             ))}
           </div>
         </section>
+        )}
       </div>
     </main>
+  );
+}
+
+function StepButton({
+  activeStep,
+  id,
+  label,
+  onSelect,
+}: {
+  activeStep: Step;
+  id: Step;
+  label: string;
+  onSelect: (step: Step) => void;
+}) {
+  return (
+    <button
+      className="mbti-step"
+      data-active={activeStep === id}
+      onClick={() => onSelect(id)}
+      type="button"
+    >
+      {label}
+    </button>
   );
 }
 
@@ -428,5 +501,41 @@ function ReportBlock({ title, items }: { title: string; items: string[] }) {
         ))}
       </ul>
     </div>
+  );
+}
+
+function RunDetail({ run }: { run: SimulationRun }) {
+  return (
+    <div className="mbti-run-detail">
+      <DetailColumn title="聊天片段">
+        {(run.chat ?? []).map((message, index) => (
+          <p key={`${message.speaker}-${index}`}>
+            <strong>{message.speaker}：</strong>
+            {message.text}
+          </p>
+        ))}
+      </DetailColumn>
+      <DetailColumn title="事件记录">
+        <ol>
+          {(run.events ?? run.trace ?? []).map((event) => (
+            <li key={event}>{event}</li>
+          ))}
+        </ol>
+      </DetailColumn>
+      <DetailColumn title="内心独白">
+        {(run.innerThoughts ?? []).map((thought) => (
+          <p key={thought}>{thought}</p>
+        ))}
+      </DetailColumn>
+    </div>
+  );
+}
+
+function DetailColumn({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <article className="mbti-detail-column">
+      <h4>{title}</h4>
+      {children}
+    </article>
   );
 }

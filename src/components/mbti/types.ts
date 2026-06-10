@@ -78,6 +78,9 @@ export type SimulationRun = {
   trace: string[];
   stress: number;
   repair: number;
+  chat: Array<{ speaker: string; text: string }>;
+  events: string[];
+  innerThoughts: string[];
 };
 
 export type SimulationReport = {
