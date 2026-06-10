@@ -199,27 +199,6 @@
   background: linear-gradient(90deg, #14b8a6, #2563eb);
 }
 
-.mbti-scenarios {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.mbti-scenario {
-  min-height: 92px;
-  padding: 12px;
-  text-align: left;
-  background: #f8fafc;
-  color: #1e293b;
-  border: 2px solid #cbd5e1;
-  cursor: pointer;
-}
-
-.mbti-scenario[data-active='true'] {
-  border-color: #2563eb;
-  background: #eff6ff;
-}
-
 .mbti-textarea {
   width: 100%;
   min-height: 84px;
@@ -228,6 +207,106 @@
   border: 2px solid #cbd5e1;
   resize: vertical;
   font: inherit;
+}
+
+.mbti-role-settings {
+  margin-top: 12px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+}
+
+.mbti-role-settings summary {
+  padding: 12px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.mbti-role-editor {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.mbti-checkbox {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 700;
+}
+
+.mbti-role-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 10px;
+}
+
+.mbti-role-editor label {
+  display: grid;
+  gap: 5px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mbti-role-editor input,
+.mbti-role-editor textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  padding: 9px;
+  font: inherit;
+}
+
+.mbti-role-editor textarea {
+  min-height: 68px;
+  resize: vertical;
+}
+
+.mbti-role-editor input:disabled,
+.mbti-role-editor textarea:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+.mbti-scale-picker {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #d4d9e2;
+  background: #fff;
+}
+
+.mbti-scale-title {
+  font-weight: 800;
+}
+
+.mbti-scale-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mbti-scale-option {
+  display: grid;
+  min-height: 92px;
+  gap: 6px;
+  padding: 10px;
+  border: 2px solid #cbd5e1;
+  background: #f8fafc;
+  color: #1e293b;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mbti-scale-option[data-active='true'] {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.mbti-scale-option span {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .mbti-action {
@@ -281,6 +360,37 @@
   padding: 12px;
 }
 
+.mbti-empty {
+  margin: 0;
+  color: #64748b;
+}
+
+.mbti-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.mbti-history-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #172033;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mbti-history-item:hover {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.mbti-history-item span {
+  color: #64748b;
+  font-size: 13px;
+}
+
 .mbti-run-card strong {
   display: block;
   margin-bottom: 6px;
@@ -299,7 +409,7 @@
     grid-template-columns: 1fr;
   }
 
-  .mbti-scenarios {
+  .mbti-scale-options {
     grid-template-columns: 1fr;
   }
 }

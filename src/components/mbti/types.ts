@@ -60,6 +60,13 @@ export type SocialActor = {
   tendency: string;
 };
 
+export type RolePreset = {
+  enabled: boolean;
+  label: string;
+  mbtiCode: string;
+  traits: string;
+};
+
 export type SimulationRun = {
   id: number;
   scenarioTitle: string;

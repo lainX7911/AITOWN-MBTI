@@ -2,6 +2,7 @@ import {
   BehaviorWeights,
   MbtiWeights,
   Profile,
+  RolePreset,
   Scenario,
   SimulationReport,
   SimulationRun,
@@ -103,6 +104,23 @@ export const scenarioPresets: Scenario[] = [
   },
 ];
 
+export const defaultQuestion = '如果亲密关系里对方一直不回消息，我会怎样处理？';
+
+export const defaultRolePresets: Record<'partner' | 'friend', RolePreset> = {
+  partner: {
+    enabled: false,
+    label: '关键对象',
+    mbtiCode: 'INFP',
+    traits: '',
+  },
+  friend: {
+    enabled: false,
+    label: '朋友/旁观者',
+    mbtiCode: 'ENTP',
+    traits: '',
+  },
+};
+
 export const partnerProfiles: SocialActor[] = [
   {
     id: 'warm-f',
@@ -191,19 +209,76 @@ export function buildProfile(answers: TestAnswer[]): Profile {
   };
 }
 
-export function runSimulation(profile: Profile, scenario: Scenario, runCount = 48): SimulationReport {
+export function runSimulation(
+  profile: Profile,
+  scenario: Scenario,
+  runCount = 48,
+  rolePresets: Record<'partner' | 'friend', RolePreset> = defaultRolePresets,
+): SimulationReport {
   const runs: SimulationRun[] = [];
+  const partners = actorSet('partner', partnerProfiles, rolePresets.partner);
+  const friends = actorSet('friend', friendProfiles, rolePresets.friend);
   for (let index = 0; index < runCount; index += 1) {
-    const partner = partnerProfiles[index % partnerProfiles.length];
-    const friend = friendProfiles[Math.floor(index / partnerProfiles.length) % friendProfiles.length];
+    const partner = partners[index % partners.length];
+    const friend = friends[Math.floor(index / partners.length) % friends.length];
     runs.push(simulateRun(index + 1, profile, scenario, partner, friend));
   }
   return aggregateReport(runs);
 }
 
+export function customScenario(question: string): Scenario {
+  return {
+    id: 'custom-question',
+    title: '用户自定义问题',
+    question,
+    pressure: inferPressure(question),
+  };
+}
+
 function averageAxis(answers: TestAnswer[], axis: TestAnswer['axis']) {
   const values = answers.filter((answer) => answer.axis === axis).map((answer) => answer.value);
   return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function actorSet(role: 'partner' | 'friend', defaults: SocialActor[], preset: RolePreset) {
+  if (!preset.enabled) {
+    return defaults;
+  }
+  return [
+    {
+      id: `custom-${role}`,
+      role,
+      label: preset.label.trim() || (role === 'partner' ? '关键对象' : '朋友/旁观者'),
+      weights: mbtiToWeights(preset.mbtiCode),
+      tendency: preset.traits.trim() || `${preset.mbtiCode.toUpperCase()} 倾向，未补充额外性格特征。`,
+    },
+    ...defaults,
+  ];
+}
+
+function mbtiToWeights(code: string): Partial<MbtiWeights> {
+  const normalized = code.toUpperCase();
+  return {
+    e: normalized.includes('E') ? 76 : 24,
+    i: normalized.includes('I') ? 76 : 24,
+    s: normalized.includes('S') ? 76 : 24,
+    n: normalized.includes('N') ? 76 : 24,
+    t: normalized.includes('T') ? 76 : 24,
+    f: normalized.includes('F') ? 76 : 24,
+    j: normalized.includes('J') ? 76 : 24,
+    p: normalized.includes('P') ? 76 : 24,
+  };
+}
+
+function inferPressure(question: string): Scenario['pressure'] {
+  const text = question.toLowerCase();
+  return {
+    ambiguity: hasAny(text, ['不回', '冷淡', '暧昧', '不确定', '异地', '沉默']) ? 86 : 64,
+    intimacy: hasAny(text, ['伴侣', '亲密', '恋爱', '喜欢', '暧昧', '异地']) ? 82 : 42,
+    conflict: hasAny(text, ['吵', '冲突', '误解', '不满', '冷淡', '分歧']) ? 76 : 48,
+    publicness: hasAny(text, ['朋友', '同事', '公开', '群', '大家']) ? 72 : 28,
+    timePressure: hasAny(text, ['一直', '马上', '尽快', '长期', '拖', '不回']) ? 76 : 52,
+  };
 }
 
 function toBehaviorWeights(weights: MbtiWeights): BehaviorWeights {
@@ -328,6 +403,10 @@ function aggregateReport(runs: SimulationRun[]): SimulationReport {
 
 function scoreActor(actor: SocialActor, key: keyof MbtiWeights) {
   return actor.weights[key] ?? 50;
+}
+
+function hasAny(text: string, words: string[]) {
+  return words.some((word) => text.includes(word));
 }
 
 function seededNoise(id: number, code: string, scenarioId: string) {

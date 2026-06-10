@@ -1,23 +1,114 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   buildProfile,
+  customScenario,
+  defaultQuestion,
+  defaultRolePresets,
   defaultAnswers,
   runSimulation,
-  scenarioPresets,
 } from './mbtiModel';
-import { Scenario, TestAnswer } from './types';
+import { RolePreset, SimulationReport, TestAnswer } from './types';
 import './MbtiExperiment.css';
 
-export default function MbtiExperiment() {
-  const [answers, setAnswers] = useState<TestAnswer[]>(defaultAnswers);
-  const [scenario, setScenario] = useState<Scenario>(scenarioPresets[0]);
-  const [question, setQuestion] = useState(scenarioPresets[0].question);
-  const [runCount, setRunCount] = useState(48);
-  const profile = useMemo(() => buildProfile(answers), [answers]);
-  const report = useMemo(
-    () => runSimulation(profile, { ...scenario, question }, runCount),
-    [profile, question, runCount, scenario],
+const experimentScales = [
+  {
+    id: 'quick',
+    label: '快速试跑',
+    runCount: 24,
+    description: '先看大致倾向，适合快速试一个问题。',
+  },
+  {
+    id: 'standard',
+    label: '标准观察',
+    runCount: 48,
+    description: '平衡速度和稳定性，适合一般验证。',
+  },
+  {
+    id: 'deep',
+    label: '深度验证',
+    runCount: 96,
+    description: '覆盖更多对象组合，适合认真比较结论。',
+  },
+];
+
+type ExperimentScale = (typeof experimentScales)[number];
+
+type HistoryEntry = {
+  id: string;
+  createdAt: number;
+  question: string;
+  profileCode: string;
+  scaleLabel: string;
+  report: SimulationReport;
+};
+
+type StoredExperimentState = {
+  answers?: TestAnswer[];
+  question?: string;
+  activeQuestion?: string;
+  rolePresets?: Record<'partner' | 'friend', RolePreset>;
+  experimentScaleId?: string;
+  activeReport?: SimulationReport;
+  history?: HistoryEntry[];
+};
+
+const storageKey = 'mbti-town-lab:v1';
+
+function readStoredState(): StoredExperimentState {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+  try {
+    return JSON.parse(window.localStorage.getItem(storageKey) ?? '{}') as StoredExperimentState;
+  } catch {
+    return {};
+  }
+}
+
+function defaultReport() {
+  return runSimulation(
+    buildProfile(defaultAnswers),
+    customScenario(defaultQuestion),
+    experimentScales[1].runCount,
+    defaultRolePresets,
   );
+}
+
+export default function MbtiExperiment() {
+  const [storedState] = useState(readStoredState);
+  const [answers, setAnswers] = useState<TestAnswer[]>(storedState.answers ?? defaultAnswers);
+  const [question, setQuestion] = useState(storedState.question ?? defaultQuestion);
+  const [activeQuestion, setActiveQuestion] = useState(
+    storedState.activeQuestion ?? storedState.question ?? defaultQuestion,
+  );
+  const [rolePresets, setRolePresets] =
+    useState<Record<'partner' | 'friend', RolePreset>>(
+      storedState.rolePresets ?? defaultRolePresets,
+    );
+  const [experimentScale, setExperimentScale] = useState<ExperimentScale>(
+    experimentScales.find((scale) => scale.id === storedState.experimentScaleId) ??
+      experimentScales[1],
+  );
+  const [activeReport, setActiveReport] = useState<SimulationReport>(
+    storedState.activeReport ?? defaultReport(),
+  );
+  const [history, setHistory] = useState<HistoryEntry[]>(storedState.history ?? []);
+  const profile = useMemo(() => buildProfile(answers), [answers]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        answers,
+        question,
+        activeQuestion,
+        rolePresets,
+        experimentScaleId: experimentScale.id,
+        activeReport,
+        history,
+      } satisfies StoredExperimentState),
+    );
+  }, [activeQuestion, activeReport, answers, experimentScale.id, history, question, rolePresets]);
 
   function updateAnswer(index: number, value: number) {
     setAnswers((current) =>
@@ -27,9 +118,38 @@ export default function MbtiExperiment() {
     );
   }
 
-  function selectScenario(nextScenario: Scenario) {
-    setScenario(nextScenario);
-    setQuestion(nextScenario.question);
+  function updateRole(role: 'partner' | 'friend', patch: Partial<RolePreset>) {
+    setRolePresets((current) => ({
+      ...current,
+      [role]: { ...current[role], ...patch },
+    }));
+  }
+
+  function startSimulation() {
+    const nextQuestion = question.trim() || defaultQuestion;
+    const nextReport = runSimulation(
+      profile,
+      customScenario(nextQuestion),
+      experimentScale.runCount,
+      rolePresets,
+    );
+    const nextHistoryEntry: HistoryEntry = {
+      id: `${Date.now()}`,
+      createdAt: Date.now(),
+      question: nextQuestion,
+      profileCode: profile.code,
+      scaleLabel: experimentScale.label,
+      report: nextReport,
+    };
+    setActiveQuestion(nextQuestion);
+    setActiveReport(nextReport);
+    setHistory((current) => [nextHistoryEntry, ...current].slice(0, 12));
+  }
+
+  function restoreHistory(entry: HistoryEntry) {
+    setQuestion(entry.question);
+    setActiveQuestion(entry.question);
+    setActiveReport(entry.report);
   }
 
   return (
@@ -47,7 +167,7 @@ export default function MbtiExperiment() {
             <span>当前人格</span>
             <strong className="mbti-code">{profile.code}</strong>
             <span>
-              运行 {report.runs.length} 个分支，覆盖伴侣人格和朋友人格组合。
+              当前使用「{experimentScale.label}」，会比较不同对象反应下的行为倾向。
             </span>
           </section>
         </header>
@@ -97,52 +217,61 @@ export default function MbtiExperiment() {
               <AxisBar left="J" right="P" leftValue={profile.weights.j} rightValue={profile.weights.p} />
             </div>
 
-            <h2 className="mt-6">3. 选择问题场景</h2>
+            <h2 className="mt-6">3. 描述你想验证的问题</h2>
             <p className="mbti-section-note">
-              这里决定要验证的问题。上面的卡片是常见社会情境，点击后会把问题填到下方；
-              你也可以直接改写成自己的问题。报告会围绕这个问题生成多轮分支。
+              直接写一个具体社会问题。系统会把它转成压力场景，再用你的人格权重跑多轮分支。
             </p>
-            <div className="mbti-scenarios">
-              {scenarioPresets.map((item) => (
-                <button
-                  className="mbti-scenario"
-                  data-active={item.id === scenario.id}
-                  key={item.id}
-                  onClick={() => selectScenario(item)}
-                  type="button"
-                >
-                  <strong>{item.title}</strong>
-                  <p>{item.question}</p>
-                </button>
-              ))}
-            </div>
             <textarea
               className="mbti-textarea"
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
               aria-label="自定义问题"
             />
-            <label className="mbti-question mt-3">
-              <span>模拟分支数：{runCount}</span>
-              <span className="mbti-inline-note">
-                分支越多，覆盖的伴侣人格、朋友人格和随机扰动越多；结论更稳定，但报告变化会更平均。
-              </span>
-              <input
-                min={24}
-                max={96}
-                step={12}
-                value={runCount}
-                type="range"
-                onChange={(event) => setRunCount(Number(event.target.value))}
+            <details className="mbti-role-settings">
+              <summary>附件设置：预设问题里的角色属性</summary>
+              <RoleEditor
+                role="partner"
+                title="关键对象"
+                value={rolePresets.partner}
+                onChange={(patch) => updateRole('partner', patch)}
               />
-            </label>
+              <RoleEditor
+                role="friend"
+                title="朋友/旁观者"
+                value={rolePresets.friend}
+                onChange={(patch) => updateRole('friend', patch)}
+              />
+            </details>
+            <div className="mbti-scale-picker">
+              <span className="mbti-scale-title">选择实验规模</span>
+              <div className="mbti-scale-options">
+                {experimentScales.map((scale) => (
+                  <button
+                    className="mbti-scale-option"
+                    data-active={scale.id === experimentScale.id}
+                    key={scale.id}
+                    onClick={() => setExperimentScale(scale)}
+                    type="button"
+                  >
+                    <strong>{scale.label}</strong>
+                    <span>{scale.description}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button className="mbti-action" onClick={startSimulation} type="button">
+              启动多轮模拟
+            </button>
           </section>
         </div>
 
         <section className="mbti-panel mt-5 mbti-report">
           <h2>4. 多轮模拟报告</h2>
+          <p className="mbti-section-note">
+            当前问题：{activeQuestion}。本次为「{experimentScale.label}」。
+          </p>
           <div className="mbti-distribution">
-            {report.distribution.map((item) => (
+            {activeReport.distribution.map((item) => (
               <div className="mbti-distribution-row" key={item.action}>
                 <strong>{item.action}</strong>
                 <div className="mbti-mini-track">
@@ -153,13 +282,13 @@ export default function MbtiExperiment() {
             ))}
           </div>
 
-          <ReportBlock title="稳定倾向" items={report.stableTendencies} />
-          <ReportBlock title="条件触发" items={report.conditionalTriggers} />
+          <ReportBlock title="稳定倾向" items={activeReport.stableTendencies} />
+          <ReportBlock title="条件触发" items={activeReport.conditionalTriggers} />
 
           <div>
             <h3>反例路径</h3>
             <div className="grid gap-3 md:grid-cols-3">
-              {report.counterexamples.map((run) => (
+              {activeReport.counterexamples.map((run) => (
                 <article className="mbti-run-card" key={run.id}>
                   <strong>
                     #{run.id} {run.action}
@@ -175,8 +304,88 @@ export default function MbtiExperiment() {
             </div>
           </div>
         </section>
+
+        <section className="mbti-panel mt-5">
+          <h2>5. 历史实验</h2>
+          <p className="mbti-section-note">
+            每次启动模拟都会保存问题和当时的报告摘要。点击一条可以回到那次结果。
+          </p>
+          {history.length === 0 && <p className="mbti-empty">还没有历史实验。</p>}
+          <div className="mbti-history-list">
+            {history.map((entry) => (
+              <button
+                className="mbti-history-item"
+                key={entry.id}
+                onClick={() => restoreHistory(entry)}
+                type="button"
+              >
+                <strong>{entry.question}</strong>
+                <span>
+                  {entry.profileCode} · {entry.scaleLabel} ·{' '}
+                  {new Date(entry.createdAt).toLocaleString()}
+                </span>
+                <span>
+                  最高倾向：{entry.report.distribution[0]?.action ?? '暂无'}{' '}
+                  {entry.report.distribution[0]?.percent ?? 0}%
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
       </div>
     </main>
+  );
+}
+
+function RoleEditor({
+  title,
+  value,
+  onChange,
+}: {
+  role: 'partner' | 'friend';
+  title: string;
+  value: RolePreset;
+  onChange: (patch: Partial<RolePreset>) => void;
+}) {
+  return (
+    <div className="mbti-role-editor">
+      <label className="mbti-checkbox">
+        <input
+          checked={value.enabled}
+          type="checkbox"
+          onChange={(event) => onChange({ enabled: event.target.checked })}
+        />
+        启用{title}预设
+      </label>
+      <div className="mbti-role-grid">
+        <label>
+          角色名称
+          <input
+            disabled={!value.enabled}
+            value={value.label}
+            onChange={(event) => onChange({ label: event.target.value })}
+          />
+        </label>
+        <label>
+          MBTI
+          <input
+            disabled={!value.enabled}
+            maxLength={4}
+            value={value.mbtiCode}
+            onChange={(event) => onChange({ mbtiCode: event.target.value.toUpperCase() })}
+          />
+        </label>
+      </div>
+      <label>
+        性格特征
+        <textarea
+          disabled={!value.enabled}
+          value={value.traits}
+          onChange={(event) => onChange({ traits: event.target.value })}
+          placeholder="例如：回避冲突、表达慢、很在意边界、容易安抚别人"
+        />
+      </label>
+    </div>
   );
 }
 
