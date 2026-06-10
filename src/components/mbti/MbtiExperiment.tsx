@@ -98,6 +98,10 @@ export default function MbtiExperiment() {
             </div>
 
             <h2 className="mt-6">3. 选择问题场景</h2>
+            <p className="mbti-section-note">
+              这里决定要验证的问题。上面的卡片是常见社会情境，点击后会把问题填到下方；
+              你也可以直接改写成自己的问题。报告会围绕这个问题生成多轮分支。
+            </p>
             <div className="mbti-scenarios">
               {scenarioPresets.map((item) => (
                 <button
@@ -119,7 +123,10 @@ export default function MbtiExperiment() {
               aria-label="自定义问题"
             />
             <label className="mbti-question mt-3">
-              模拟分支数：{runCount}
+              <span>模拟分支数：{runCount}</span>
+              <span className="mbti-inline-note">
+                分支越多，覆盖的伴侣人格、朋友人格和随机扰动越多；结论更稳定，但报告变化会更平均。
+              </span>
               <input
                 min={24}
                 max={96}

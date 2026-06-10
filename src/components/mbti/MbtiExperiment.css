@@ -76,6 +76,20 @@
   letter-spacing: 0;
 }
 
+.mbti-section-note,
+.mbti-inline-note {
+  display: block;
+  margin: -4px 0 12px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.mbti-inline-note {
+  margin: 4px 0 0;
+  font-weight: 500;
+}
+
 .mbti-questions {
   display: grid;
   gap: 14px;
