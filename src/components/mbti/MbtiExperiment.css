@@ -93,6 +93,13 @@
   font-weight: 700;
 }
 
+.mbti-question-example {
+  margin: 0;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 .mbti-slider-row {
   display: grid;
   grid-template-columns: 92px minmax(120px, 1fr) 92px;

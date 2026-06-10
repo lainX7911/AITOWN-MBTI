@@ -59,6 +59,7 @@ export default function MbtiExperiment() {
               {answers.map((answer, index) => (
                 <div className="mbti-question" key={`${answer.axis}-${index}`}>
                   <label htmlFor={`answer-${index}`}>{answer.prompt}</label>
+                  <p className="mbti-question-example">{answer.example}</p>
                   <div className="mbti-slider-row">
                     <span>{answer.leftLabel}</span>
                     <input

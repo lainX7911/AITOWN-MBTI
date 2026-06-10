@@ -33,6 +33,7 @@ export type Profile = {
 export type TestAnswer = {
   axis: Axis;
   prompt: string;
+  example: string;
   leftLabel: string;
   rightLabel: string;
   value: number;
