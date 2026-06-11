@@ -7,6 +7,23 @@ import { Player } from '../../convex/aiTown/player';
 import { Conversation } from '../../convex/aiTown/conversation';
 import { useEffect, useRef } from 'react';
 
+function renderMessageText(text: string) {
+  return text.split(/([（(][^（）()]+[）)])/g).map((part, index) => {
+    const isSceneDescription =
+      (part.startsWith('（') && part.endsWith('）')) ||
+      (part.startsWith('(') && part.endsWith(')'));
+
+    return (
+      <span
+        key={`${part}-${index}`}
+        className={isSceneDescription ? 'text-brown-700/75' : 'text-black'}
+      >
+        {part}
+      </span>
+    );
+  });
+}
+
 export function Messages({
   worldId,
   engineId,
@@ -26,19 +43,19 @@ export function Messages({
 }) {
   const humanPlayerId = humanPlayer?.id;
   const descriptions = useQuery(api.world.gameDescriptions, { worldId });
-  const messages = useQuery(api.messages.listMessages, {
+  const messageResult = useQuery(api.messages.listMessagesWithContext, {
     worldId,
     conversationId: conversation.doc.id,
   });
   let currentlyTyping = conversation.kind === 'active' ? conversation.doc.isTyping : undefined;
-  if (messages !== undefined && currentlyTyping) {
-    if (messages.find((m) => m.messageUuid === currentlyTyping!.messageUuid)) {
+  if (messageResult !== undefined && currentlyTyping) {
+    if (messageResult.messages.find((m: { messageUuid: string }) => m.messageUuid === currentlyTyping!.messageUuid)) {
       currentlyTyping = undefined;
     }
   }
   const currentlyTypingName =
     currentlyTyping &&
-    descriptions?.playerDescriptions.find((p) => p.playerId === currentlyTyping?.playerId)?.name;
+    descriptions?.playerDescriptions.find((p: { playerId: string }) => p.playerId === currentlyTyping?.playerId)?.name;
 
   const scrollView = scrollViewRef.current;
   const isScrolledToBottom = useRef(false);
@@ -60,36 +77,52 @@ export function Messages({
         behavior: 'smooth',
       });
     }
-  }, [messages, currentlyTyping]);
+  }, [messageResult, currentlyTyping]);
 
-  if (messages === undefined) {
+  if (messageResult === undefined) {
     return null;
   }
-  if (messages.length === 0 && !inConversationWithMe) {
+  if (messageResult.messages.length === 0 && !inConversationWithMe) {
     return null;
   }
-  const messageNodes: { time: number; node: React.ReactNode }[] = messages.map((m) => {
+  const conversationEventContext = messageResult.eventContext;
+  const messageNodes: { time: number; node: React.ReactNode }[] = messageResult.messages.map((m: {
+    _id: string;
+    _creationTime: number;
+    author: string;
+    authorName: string;
+    eventContext?: {
+      eventId: string;
+      title: string;
+      text: string;
+    };
+    text: string;
+  }) => {
     const node = (
-      <div key={`text-${m._id}`} className="leading-tight mb-6">
-        <div className="flex gap-4">
-          <span className="uppercase flex-grow">{m.authorName}</span>
-          <time dateTime={m._creationTime.toString()}>
-            {new Date(m._creationTime).toLocaleString()}
-          </time>
-        </div>
-        <div className={clsx('bubble', m.author === humanPlayerId && 'bubble-mine')}>
-          <p className="bg-white -mx-3 -my-1">{m.text}</p>
+      <div key={`message-block-${m._id}`}>
+        <div key={`text-${m._id}`} className="mb-7 leading-snug">
+          <div className="mb-2 flex gap-4 text-black">
+            <span className="uppercase flex-grow">{m.authorName}</span>
+            <time dateTime={m._creationTime.toString()}>
+              {new Date(m._creationTime).toLocaleString()}
+            </time>
+          </div>
+          <div className={clsx('bubble', m.author === humanPlayerId && 'bubble-mine')}>
+            <p className="bg-white -mx-3 -my-1 leading-snug">{renderMessageText(m.text)}</p>
+          </div>
         </div>
       </div>
     );
     return { node, time: m._creationTime };
   });
-  const lastMessageTs = messages.map((m) => m._creationTime).reduce((a, b) => Math.max(a, b), 0);
+  const lastMessageTs = messageResult.messages
+    .map((m: { _creationTime: number }) => m._creationTime)
+    .reduce((a: number, b: number) => Math.max(a, b), 0);
 
   const membershipNodes: typeof messageNodes = [];
   if (conversation.kind === 'active') {
     for (const [playerId, m] of conversation.doc.participants) {
-      const playerName = descriptions?.playerDescriptions.find((p) => p.playerId === playerId)
+      const playerName = descriptions?.playerDescriptions.find((p: { playerId: string }) => p.playerId === playerId)
         ?.name;
       let started;
       if (m.status.kind === 'participating') {
@@ -98,8 +131,8 @@ export function Messages({
       if (started) {
         membershipNodes.push({
           node: (
-            <div key={`joined-${playerId}`} className="leading-tight mb-6">
-              <p className="text-brown-700 text-center">{playerName} joined the conversation.</p>
+            <div key={`joined-${playerId}`} className="mb-7 leading-snug">
+              <p className="text-center text-brown-700/80">{playerName} 加入了对话。</p>
             </div>
           ),
           time: started,
@@ -108,47 +141,44 @@ export function Messages({
     }
   } else {
     for (const playerId of conversation.doc.participants) {
-      const playerName = descriptions?.playerDescriptions.find((p) => p.playerId === playerId)
+      const playerName = descriptions?.playerDescriptions.find((p: { playerId: string }) => p.playerId === playerId)
         ?.name;
       const started = conversation.doc.created;
       membershipNodes.push({
         node: (
-          <div key={`joined-${playerId}`} className="leading-tight mb-6">
-            <p className="text-brown-700 text-center">{playerName} joined the conversation.</p>
+          <div key={`joined-${playerId}`} className="mb-7 leading-snug">
+            <p className="text-center text-brown-700/80">{playerName} 加入了对话。</p>
           </div>
         ),
         time: started,
-      });
-      const ended = conversation.doc.ended;
-      membershipNodes.push({
-        node: (
-          <div key={`left-${playerId}`} className="leading-tight mb-6">
-            <p className="text-brown-700 text-center">{playerName} left the conversation.</p>
-          </div>
-        ),
-        // Always sort all "left" messages after the last message.
-        // TODO: We can remove this once we want to support more than two participants per conversation.
-        time: Math.max(lastMessageTs + 1, ended),
       });
     }
   }
   const nodes = [...messageNodes, ...membershipNodes];
   nodes.sort((a, b) => a.time - b.time);
   return (
-    <div className="chats text-base sm:text-sm">
-      <div className="bg-brown-200 text-black p-2">
+    <div className="chats text-lg">
+      <div className="bg-brown-200 p-3 text-black">
+        {conversationEventContext && (
+          <div className="mb-7 leading-snug">
+            <div className="chat-event-context">
+              <strong>{conversationEventContext.title}</strong>
+              <p>{conversationEventContext.text}</p>
+            </div>
+          </div>
+        )}
         {nodes.length > 0 && nodes.map((n) => n.node)}
         {currentlyTyping && currentlyTyping.playerId !== humanPlayerId && (
-          <div key="typing" className="leading-tight mb-6">
-            <div className="flex gap-4">
+          <div key="typing" className="mb-7 leading-snug">
+            <div className="mb-2 flex gap-4 text-black">
               <span className="uppercase flex-grow">{currentlyTypingName}</span>
               <time dateTime={currentlyTyping.since.toString()}>
                 {new Date(currentlyTyping.since).toLocaleString()}
               </time>
             </div>
             <div className={clsx('bubble')}>
-              <p className="bg-white -mx-3 -my-1">
-                <i>typing...</i>
+              <p className="bg-white -mx-3 -my-1 leading-snug">
+                <i className="text-brown-700/75">正在输入...</i>
               </p>
             </div>
           </div>
@@ -160,6 +190,21 @@ export function Messages({
             conversation={conversation.doc}
             humanPlayer={humanPlayer}
           />
+        )}
+        {messageResult.eventBehaviors.length > 0 && (
+          <div className="mb-7 leading-snug">
+            <div className="chat-event-context chat-event-followup">
+              <span>事件后的用户行为</span>
+              {messageResult.eventBehaviors.map((behavior: { createdAt: number; text: string }) => (
+                <p key={`${behavior.createdAt}-${behavior.text}`}>
+                  {behavior.text}
+                  <time className="ml-2 text-xs text-brown-700/60" dateTime={behavior.createdAt.toString()}>
+                    {new Date(behavior.createdAt).toLocaleTimeString()}
+                  </time>
+                </p>
+              ))}
+            </div>
+          </div>
         )}
       </div>
     </div>

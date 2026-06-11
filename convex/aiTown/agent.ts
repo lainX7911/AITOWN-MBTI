@@ -67,9 +67,19 @@ export class Agent {
 
     const recentlyAttemptedInvite =
       this.lastInviteAttempt && now < this.lastInviteAttempt + CONVERSATION_COOLDOWN;
-    const doingActivity = player.activity && player.activity.until > now;
+    let doingActivity = player.activity && player.activity.until > now;
     if (doingActivity && (conversation || player.pathfinding)) {
       player.activity!.until = now;
+      doingActivity = false;
+    }
+    if (
+      doingActivity &&
+      !conversation &&
+      !player.pathfinding &&
+      player.activity?.description.startsWith('去')
+    ) {
+      player.activity.until = now;
+      doingActivity = false;
     }
     // If we're not in a conversation, do something.
     // If we aren't doing an activity or moving, do something.
@@ -81,6 +91,11 @@ export class Agent {
         player: player.serialize(),
         otherFreePlayers: [...game.world.players.values()]
           .filter((p) => p.id !== player.id)
+          .filter(
+            (p) =>
+              Boolean(p.human) ||
+              [...game.world.agents.values()].some((otherAgent) => otherAgent.playerId === p.id),
+          )
           .filter(
             (p) => ![...game.world.conversations.values()].find((c) => c.participants.has(p.id)),
           )
@@ -160,8 +175,9 @@ export class Agent {
       }
       if (member.status.kind === 'participating') {
         const started = member.status.started;
-        if (conversation.isTyping && conversation.isTyping.playerId !== player.id) {
-          // Wait for the other player to finish typing.
+        if (conversation.isTyping) {
+          // Wait for the current message to finish. This prevents the same agent
+          // from scheduling multiple messages before the first one is persisted.
           return;
         }
         if (!conversation.lastMessage) {
@@ -190,7 +206,7 @@ export class Agent {
         }
         // See if the conversation has been going on too long and decide to leave.
         const tooLongDeadline = started + MAX_CONVERSATION_DURATION;
-        if (tooLongDeadline < now || conversation.numMessages > MAX_CONVERSATION_MESSAGES) {
+        if (tooLongDeadline < now || conversation.numMessages >= MAX_CONVERSATION_MESSAGES) {
           console.log(`${player.id} leaving conversation with ${otherPlayer.id}.`);
           const messageUuid = crypto.randomUUID();
           conversation.setIsTyping(now, player, messageUuid);
@@ -207,6 +223,9 @@ export class Agent {
         }
         // Wait for the awkward deadline if we sent the last message.
         if (conversation.lastMessage.author === player.id) {
+          if (!otherPlayer.human) {
+            return;
+          }
           const awkwardDeadline = conversation.lastMessage.timestamp + AWKWARD_CONVERSATION_TIMEOUT;
           if (now < awkwardDeadline) {
             return;
@@ -247,10 +266,11 @@ export class Agent {
       );
     }
     const operationId = game.allocId('operations');
-    console.log(`Agent ${this.id} starting operation ${name} (${operationId})`);
-    game.scheduleOperation(name, { operationId, ...args } as any);
+    const operationName = String(name);
+    console.log(`Agent ${this.id} starting operation ${operationName} (${operationId})`);
+    game.scheduleOperation(operationName, { operationId, ...args } as any);
     this.inProgressOperation = {
-      name,
+      name: operationName,
       operationId,
       started: now,
     };
@@ -358,7 +378,7 @@ export const findConversationCandidate = internalQuery({
           continue;
         }
       }
-      candidates.push({ id: otherPlayer.id, position });
+      candidates.push({ id: otherPlayer.id, position: otherPlayer.position });
     }
 
     // Sort by distance and take the nearest candidate.

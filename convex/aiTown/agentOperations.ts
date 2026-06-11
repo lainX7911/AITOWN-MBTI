@@ -1,6 +1,7 @@
 import { v } from 'convex/values';
 import { internalAction } from '../_generated/server';
 import { WorldMap, serializedWorldMap } from './worldMap';
+import { townDestinations } from '../../data/townLayout';
 import { rememberConversation } from '../agent/memory';
 import { GameId, agentId, conversationId, playerId } from './ids';
 import {
@@ -24,13 +25,21 @@ export const agentRememberConversation = internalAction({
     operationId: v.string(),
   },
   handler: async (ctx, args) => {
-    await rememberConversation(
-      ctx,
-      args.worldId,
-      args.agentId as GameId<'agents'>,
-      args.playerId as GameId<'players'>,
-      args.conversationId as GameId<'conversations'>,
-    );
+    try {
+      await rememberConversation(
+        ctx,
+        args.worldId,
+        args.agentId as GameId<'agents'>,
+        args.playerId as GameId<'players'>,
+        args.conversationId as GameId<'conversations'>,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('not found')) {
+        throw error;
+      }
+      console.warn(`Skipping stale conversation memory for ${args.conversationId}: ${message}`);
+    }
     await sleep(Math.random() * 1000);
     await ctx.runMutation(api.aiTown.main.sendInput, {
       worldId: args.worldId,
@@ -110,9 +119,37 @@ export const agentDoSomething = internalAction({
     const recentlyAttemptedInvite =
       agent.lastInviteAttempt && now < agent.lastInviteAttempt + CONVERSATION_COOLDOWN;
     const recentActivity = player.activity && now < player.activity.until + ACTIVITY_COOLDOWN;
-    // Decide whether to do an activity or wander somewhere.
+    const invitee =
+      justLeftConversation || recentlyAttemptedInvite
+        ? undefined
+        : await ctx.runQuery(internal.aiTown.agent.findConversationCandidate, {
+            now,
+            worldId: args.worldId,
+            player: args.player,
+            otherFreePlayers: args.otherFreePlayers,
+          });
+    if (invitee) {
+      await sleep(Math.random() * 1000);
+      await ctx.runMutation(api.aiTown.main.sendInput, {
+        worldId: args.worldId,
+        name: 'finishDoSomething',
+        args: {
+          operationId: args.operationId,
+          agentId: args.agent.id,
+          invitee,
+        },
+      });
+      return;
+    }
+    // Decide whether to do an activity or move through town.
     if (!player.pathfinding) {
-      if (recentActivity || justLeftConversation) {
+      const itinerary = randomTownItinerary(
+        map,
+        player.position,
+        args.otherFreePlayers.map((otherPlayer) => otherPlayer.position),
+      );
+      const shouldMove = recentActivity || justLeftConversation || Math.random() < 0.8;
+      if (shouldMove && itinerary) {
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
@@ -120,7 +157,12 @@ export const agentDoSomething = internalAction({
           args: {
             operationId: args.operationId,
             agentId: agent.id,
-            destination: wanderDestination(map),
+            destination: itinerary.destination,
+            activity: {
+              description: `去${itinerary.label}`,
+              emoji: itinerary.emoji,
+              until: Date.now() + 20 * 1000,
+            },
           },
         });
         return;
@@ -144,15 +186,6 @@ export const agentDoSomething = internalAction({
         return;
       }
     }
-    const invitee =
-      justLeftConversation || recentlyAttemptedInvite
-        ? undefined
-        : await ctx.runQuery(internal.aiTown.agent.findConversationCandidate, {
-            now,
-            worldId: args.worldId,
-            player: args.player,
-            otherFreePlayers: args.otherFreePlayers,
-          });
 
     // TODO: We hit a lot of OCC errors on sending inputs in this file. It's
     // easy for them to get scheduled at the same time and line up in time.
@@ -169,10 +202,44 @@ export const agentDoSomething = internalAction({
   },
 });
 
-function wanderDestination(worldMap: WorldMap) {
-  // Wander someonewhere at least one tile away from the edge.
+function randomTownItinerary(
+  worldMap: WorldMap,
+  origin: { x: number; y: number },
+  occupiedPositions: Array<{ x: number; y: number }>,
+) {
+  const candidates = townDestinations
+    .filter(({ point }) => pointIsInsideMap(worldMap, point))
+    .filter(({ point }) => Math.abs(point.x - origin.x) + Math.abs(point.y - origin.y) >= 4)
+    .filter(
+      ({ point }) =>
+        !occupiedPositions.some(
+          (occupied) => Math.abs(occupied.x - point.x) + Math.abs(occupied.y - point.y) < 2,
+        ),
+    );
+  const destinations = candidates.length > 0 ? candidates : townDestinations;
+  const choice = destinations[Math.floor(Math.random() * destinations.length)];
+  if (!choice) {
+    return null;
+  }
   return {
-    x: 1 + Math.floor(Math.random() * (worldMap.width - 2)),
-    y: 1 + Math.floor(Math.random() * (worldMap.height - 2)),
+    destination: choice.point,
+    label: choice.label,
+    emoji: emojiForDestination(choice.key),
   };
+}
+
+function pointIsInsideMap(worldMap: WorldMap, point: { x: number; y: number }) {
+  return point.x > 0 && point.y > 0 && point.x < worldMap.width - 1 && point.y < worldMap.height - 1;
+}
+
+function emojiForDestination(key: string) {
+  if (key.includes('home')) return '🏠';
+  if (key === 'cafe') return '☕';
+  if (key === 'workshop') return '🛠️';
+  if (key === 'clinic') return '🩺';
+  if (key === 'school') return '📚';
+  if (key === 'shop') return '🛍️';
+  if (key === 'station') return '🚌';
+  if (key === 'office') return '📋';
+  return '🚶';
 }

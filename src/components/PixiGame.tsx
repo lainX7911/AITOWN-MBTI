@@ -1,5 +1,5 @@
 import * as PIXI from 'pixi.js';
-import { useApp } from '@pixi/react';
+import { Container, Graphics, Text, useApp } from '@pixi/react';
 import { Player, SelectElement } from './Player.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { PixiStaticMap } from './PixiStaticMap.tsx';
@@ -14,6 +14,8 @@ import { DebugPath } from './DebugPath.tsx';
 import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
+import { townFacilities } from '../../data/townLayout.ts';
+import type { TownFacility } from '../../data/townLayout.ts';
 
 export const PixiGame = (props: {
   worldId: Id<'worlds'>;
@@ -22,6 +24,7 @@ export const PixiGame = (props: {
   historicalTime: number | undefined;
   width: number;
   height: number;
+  lockedViewport?: boolean;
   setSelectedElement: SelectElement;
 }) => {
   // PIXI setup.
@@ -58,7 +61,7 @@ export const PixiGame = (props: {
         return;
       }
     }
-    if (!humanPlayerId) {
+    if (props.lockedViewport || !humanPlayerId) {
       return;
     }
     const viewport = viewportRef.current;
@@ -85,13 +88,23 @@ export const PixiGame = (props: {
   // Zoom on the user’s avatar when it is created
   useEffect(() => {
     if (!viewportRef.current || humanPlayerId === undefined) return;
+    if (props.lockedViewport) return;
 
     const humanPlayer = props.game.world.players.get(humanPlayerId)!;
     viewportRef.current.animate({
       position: new PIXI.Point(humanPlayer.position.x * tileDim, humanPlayer.position.y * tileDim),
       scale: 1.5,
     });
-  }, [humanPlayerId]);
+  }, [humanPlayerId, props.lockedViewport, props.game.world.players, tileDim]);
+
+  useEffect(() => {
+    if (!viewportRef.current || !props.lockedViewport) return;
+    viewportRef.current.animate({
+      position: new PIXI.Point((width * tileDim) / 2, (height * tileDim) / 2),
+      scale: 1,
+      time: 0,
+    });
+  }, [height, props.lockedViewport, tileDim, width]);
 
   return (
     <PixiViewport
@@ -100,6 +113,8 @@ export const PixiGame = (props: {
       screenHeight={props.height}
       worldWidth={width * tileDim}
       worldHeight={height * tileDim}
+      interactive={!props.lockedViewport}
+      locked={props.lockedViewport}
       viewportRef={viewportRef}
     >
       <PixiStaticMap
@@ -107,6 +122,7 @@ export const PixiGame = (props: {
         onpointerup={onMapPointerUp}
         onpointerdown={onMapPointerDown}
       />
+      <TownFacilities tileDim={tileDim} />
       {players.map(
         (p) =>
           // Only show the path for the human player in non-debug mode.
@@ -123,9 +139,148 @@ export const PixiGame = (props: {
           isViewer={p.id === humanPlayerId}
           onClick={props.setSelectedElement}
           historicalTime={props.historicalTime}
+          displayScale={props.lockedViewport ? 2 : 1}
         />
       ))}
     </PixiViewport>
   );
 };
 export default PixiGame;
+
+function TownFacilities({ tileDim }: { tileDim: number }) {
+  return (
+    <>
+      {townFacilities.map((facility) => (
+        <TownFacilityMarker
+          facility={facility}
+          key={facility.key}
+          x={facility.x * tileDim}
+          y={facility.y * tileDim}
+        />
+      ))}
+    </>
+  );
+}
+
+function TownFacilityMarker({
+  facility,
+  x,
+  y,
+}: {
+  facility: TownFacility;
+  x: number;
+  y: number;
+}) {
+  const drawFacility = (g: PIXI.Graphics) => {
+    g.clear();
+    g.lineStyle(1, 0x2b211d, 0.86);
+    if (facility.icon === 'square') {
+      g.beginFill(facility.tone, 0.82);
+      g.drawRoundedRect(-15, -11, 30, 22, 4);
+      g.endFill();
+      g.lineStyle(1, 0xf5df9f, 0.7);
+      g.drawCircle(0, 0, 6);
+      g.moveTo(-12, 0);
+      g.lineTo(12, 0);
+      g.moveTo(0, -8);
+      g.lineTo(0, 8);
+      return;
+    }
+    if (facility.icon === 'station') {
+      g.beginFill(facility.tone, 0.9);
+      g.drawRoundedRect(-12, -5, 24, 14, 2);
+      g.endFill();
+      g.beginFill(0x2b211d, 0.82);
+      g.drawRect(-8, -1, 5, 5);
+      g.drawRect(3, -1, 5, 5);
+      g.endFill();
+      g.lineStyle(1, 0xf4d482, 0.9);
+      g.moveTo(-12, 10);
+      g.lineTo(12, 10);
+      return;
+    }
+    g.beginFill(facility.tone, 0.88);
+    g.drawRect(-11, -2, 22, 14);
+    g.endFill();
+    g.beginFill(0x4b2d25, 0.92);
+    g.drawPolygon([-13, -2, 0, -13, 13, -2]);
+    g.endFill();
+    g.beginFill(0x2b211d, 0.86);
+    g.drawRect(-3, 4, 6, 8);
+    g.endFill();
+    if (facility.icon === 'apartment') {
+      g.beginFill(0xf6d27a, 0.68);
+      g.drawRect(-8, 1, 3, 3);
+      g.drawRect(5, 1, 3, 3);
+      g.drawRect(-8, 6, 3, 3);
+      g.drawRect(5, 6, 3, 3);
+      g.endFill();
+    }
+    if (facility.icon === 'cafe') {
+      g.beginFill(0xf6d27a, 0.9);
+      g.drawRoundedRect(-7, 1, 7, 5, 2);
+      g.endFill();
+      g.lineStyle(1, 0xf6d27a, 0.9);
+      g.drawCircle(2, 3, 3);
+    }
+    if (facility.icon === 'clinic') {
+      g.beginFill(0xffffff, 0.9);
+      g.drawRect(-2, -9, 4, 9);
+      g.drawRect(-5, -6, 10, 3);
+      g.endFill();
+    }
+    if (facility.icon === 'workshop') {
+      g.lineStyle(2, 0xf6d27a, 0.9);
+      g.moveTo(-8, 7);
+      g.lineTo(8, 1);
+    }
+    if (facility.icon === 'office' || facility.icon === 'school') {
+      g.beginFill(0xf6d27a, 0.74);
+      g.drawRect(-8, 1, 4, 4);
+      g.drawRect(4, 1, 4, 4);
+      g.endFill();
+    }
+    if (facility.icon === 'shop') {
+      g.beginFill(0xf4d482, 0.92);
+      g.drawRect(-10, -2, 20, 4);
+      g.endFill();
+      g.lineStyle(1, 0x8b3f35, 0.9);
+      g.moveTo(-8, -2);
+      g.lineTo(-8, 2);
+      g.moveTo(-3, -2);
+      g.lineTo(-3, 2);
+      g.moveTo(3, -2);
+      g.lineTo(3, 2);
+      g.moveTo(8, -2);
+      g.lineTo(8, 2);
+    }
+  };
+  const drawLabel = (g: PIXI.Graphics) => {
+    const width = Math.max(44, facility.label.length * 13 + 12);
+    g.clear();
+    g.lineStyle(1, 0xf4e1b8, 0.78);
+    g.beginFill(0x211817, 0.76);
+    g.drawRoundedRect(-width / 2, -26, width, 18, 4);
+    g.endFill();
+  };
+
+  return (
+    <Container x={x} y={y}>
+      <Graphics draw={drawFacility} scale={facility.scale} />
+      <Graphics draw={drawLabel} />
+      <Text
+        text={facility.label}
+        anchor={{ x: 0.5, y: 0.5 }}
+        y={-17}
+        style={
+          new PIXI.TextStyle({
+            fill: 0xf9edd0,
+            fontSize: 10,
+            fontWeight: '700',
+            letterSpacing: 0,
+          })
+        }
+      />
+    </Container>
+  );
+}

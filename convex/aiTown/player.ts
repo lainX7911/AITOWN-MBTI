@@ -15,6 +15,7 @@ import { stopPlayer, findRoute, blocked, movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
 import { characters } from '../../data/characters';
 import { PlayerDescription } from './playerDescription';
+import { townDestinations } from '../../data/townLayout';
 
 const pathfinding = v.object({
   destination: point,
@@ -84,7 +85,9 @@ export class Player {
   tick(game: Game, now: number) {
     if (this.human && this.lastInput < now - HUMAN_IDLE_TOO_LONG) {
       this.leave(game, now);
+      return;
     }
+    tickBackgroundResidentMovement(game, now, this);
   }
 
   tickPathfinding(game: Game, now: number) {
@@ -308,3 +311,48 @@ export const playerInputs = {
     },
   }),
 };
+
+function tickBackgroundResidentMovement(game: Game, now: number, player: Player) {
+  if (player.human || player.pathfinding) {
+    return;
+  }
+  if (
+    player.activity &&
+    player.activity.until > now &&
+    player.activity.description !== '闲逛'
+  ) {
+    return;
+  }
+  if (game.world.playerConversation(player)) {
+    return;
+  }
+  const hasAgent = [...game.world.agents.values()].some((agent) => agent.playerId === player.id);
+  if (hasAgent) {
+    return;
+  }
+  const description = game.playerDescriptions.get(player.id);
+  if (!description?.description.includes('背景居民')) {
+    return;
+  }
+
+  const availableDestinations = townDestinations
+    .filter(
+      ({ point }) => Math.abs(point.x - player.position.x) + Math.abs(point.y - player.position.y) >= 4,
+    )
+    .filter(({ point }) => !blocked(game, now, point, player.id));
+  const destinations = availableDestinations.length > 0 ? availableDestinations : townDestinations;
+  const destination = destinations[Math.floor(Math.random() * destinations.length)]?.point;
+  if (!destination || blocked(game, now, destination, player.id)) {
+    player.activity = {
+      description: '闲逛',
+      until: now + 2000 + Math.random() * 3000,
+    };
+    return;
+  }
+
+  movePlayer(game, now, player, destination);
+  player.activity = {
+    description: '闲逛',
+    until: now + 6000 + Math.random() * 6000,
+  };
+}

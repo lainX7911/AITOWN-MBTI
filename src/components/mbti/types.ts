@@ -66,6 +66,7 @@ export type RolePreset = {
   enabled: boolean;
   role: ActorRole;
   label: string;
+  mapping: string;
   mbtiCode: string;
   traits: string;
   reason: string;

@@ -14,8 +14,29 @@ export type ViewportProps = {
   screenHeight: number;
   worldWidth: number;
   worldHeight: number;
+  interactive?: boolean;
+  locked?: boolean;
   children?: ReactNode;
 };
+
+function configureViewport(viewport: Viewport, props: ViewportProps) {
+  viewport.clamp({ direction: 'all', underflow: 'center' });
+  if (props.locked) {
+    viewport.clampZoom({ minScale: 1, maxScale: 1 });
+    return;
+  }
+  const minScale = Math.max(
+    (1.04 * props.screenWidth) / props.worldWidth,
+    (1.04 * props.screenHeight) / props.worldHeight,
+  );
+  viewport.clampZoom({
+    minScale,
+    maxScale: Math.max(3.0, minScale),
+  });
+  if (viewport.scale.x < minScale || viewport.scale.y < minScale) {
+    viewport.setZoom(minScale);
+  }
+}
 
 // https://davidfig.github.io/pixi-viewport/jsdoc/Viewport.html
 export default PixiComponent('Viewport', {
@@ -31,20 +52,27 @@ export default PixiComponent('Viewport', {
       viewportRef.current = viewport;
     }
     // Activate plugins
-    viewport
-      .drag()
-      .pinch({})
-      .wheel()
-      .decelerate()
-      .clamp({ direction: 'all', underflow: 'center' })
-      .setZoom(-10)
-      .clampZoom({
-        minScale: (1.04 * props.screenWidth) / (props.worldWidth / 2),
-        maxScale: 3.0,
-      });
+    if (props.interactive !== false) {
+      viewport.drag().pinch({}).wheel().decelerate();
+    }
+    configureViewport(viewport, props);
     return viewport;
   },
   applyProps(viewport, oldProps: any, newProps: any) {
+    if (
+      oldProps.screenWidth !== newProps.screenWidth ||
+      oldProps.screenHeight !== newProps.screenHeight ||
+      oldProps.worldWidth !== newProps.worldWidth ||
+      oldProps.worldHeight !== newProps.worldHeight
+    ) {
+      viewport.resize(
+        newProps.screenWidth,
+        newProps.screenHeight,
+        newProps.worldWidth,
+        newProps.worldHeight,
+      );
+      configureViewport(viewport, newProps);
+    }
     Object.keys(newProps).forEach((p) => {
       if (p !== 'app' && p !== 'viewportRef' && p !== 'children' && oldProps[p] !== newProps[p]) {
         // @ts-expect-error Ignoring TypeScript here

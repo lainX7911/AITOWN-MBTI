@@ -112,17 +112,19 @@ export const defaultRolePresets: Record<'partner' | 'friend', RolePreset> = {
     enabled: false,
     role: 'partner',
     label: '关键对象',
-    mbtiCode: 'INFP',
+    mapping: '问题里的伴侣/女朋友/对方/她',
+    mbtiCode: '',
     traits: '',
     reason: '默认关键对象',
   },
   friend: {
     enabled: false,
     role: 'friend',
-    label: '朋友/旁观者',
-    mbtiCode: 'ENTP',
+    label: '朋友/支持者',
+    mapping: '问题里的朋友/支持者',
+    mbtiCode: '',
     traits: '',
-    reason: '默认朋友/旁观者',
+    reason: '默认朋友/支持者',
   },
 };
 
@@ -193,6 +195,7 @@ export function inferRolePresets(question: string, previous: RolePreset[] = []):
   const candidates: Array<{
     role: ActorRole;
     label: string;
+    mapping: string;
     mbtiCode: string;
     reason: string;
     words: string[];
@@ -200,42 +203,48 @@ export function inferRolePresets(question: string, previous: RolePreset[] = []):
     {
       role: 'partner',
       label: '伴侣',
-      mbtiCode: 'INFP',
+      mapping: '伴侣/女朋友/男朋友/对象/她/他/对方',
+      mbtiCode: '',
       reason: '问题里出现了伴侣/亲密关系相关对象。',
       words: ['伴侣', '男朋友', '女朋友', '恋人', '对象', '亲密关系', '老公', '老婆'],
     },
     {
       role: 'ambiguous',
       label: '暧昧对象',
-      mbtiCode: 'ENFP',
+      mapping: '暧昧对象/喜欢的人/她/他/对方',
+      mbtiCode: '',
       reason: '问题里出现了暧昧、喜欢或关系未定义对象。',
       words: ['暧昧', '喜欢的人', 'crush', '约会对象'],
     },
     {
       role: 'friend',
       label: '朋友',
-      mbtiCode: 'ENTP',
+      mapping: '朋友/闺蜜/兄弟/同学/室友',
+      mbtiCode: '',
       reason: '问题里出现了朋友或旁观建议者。',
       words: ['朋友', '闺蜜', '兄弟', '同学', '室友'],
     },
     {
       role: 'coworker',
       label: '同事',
-      mbtiCode: 'ESTJ',
+      mapping: '同事/上司/领导/老板/客户',
+      mbtiCode: '',
       reason: '问题里出现了同事、上级或工作协作对象。',
       words: ['同事', '上司', '领导', '老板', '客户', '工作', '项目'],
     },
     {
       role: 'family',
       label: '家人',
-      mbtiCode: 'ISFJ',
+      mapping: '家人/父母/妈妈/爸爸/亲戚/孩子',
+      mbtiCode: '',
       reason: '问题里出现了家庭成员。',
       words: ['家人', '父母', '妈妈', '爸爸', '亲戚', '孩子'],
     },
     {
       role: 'ex',
       label: '前任',
-      mbtiCode: 'ISTP',
+      mapping: '前任/前男友/前女友/旧关系',
+      mbtiCode: '',
       reason: '问题里出现了前任或旧关系。',
       words: ['前任', '前男友', '前女友', '旧关系'],
     },
@@ -248,6 +257,7 @@ export function inferRolePresets(question: string, previous: RolePreset[] = []):
         enabled: existing?.enabled ?? true,
         role: candidate.role,
         label: existing?.label || candidate.label,
+        mapping: existing?.mapping || candidate.mapping,
         mbtiCode: existing?.mbtiCode || candidate.mbtiCode,
         traits: existing?.traits ?? '',
         reason: candidate.reason,
@@ -262,7 +272,8 @@ export function inferRolePresets(question: string, previous: RolePreset[] = []):
       enabled: existing?.enabled ?? true,
       role: 'other',
       label: existing?.label || '对方',
-      mbtiCode: existing?.mbtiCode || 'INFP',
+      mapping: existing?.mapping || '问题里的对方/她/他/TA',
+      mbtiCode: existing?.mbtiCode || '',
       traits: existing?.traits ?? '',
       reason: '暂未识别到明确关系词，先按“对方”处理。',
     },
@@ -343,12 +354,19 @@ function actorSet(role: 'partner' | 'friend', defaults: SocialActor[], presets: 
     role: preset.role,
     label: preset.label.trim() || '对方',
     weights: mbtiToWeights(preset.mbtiCode),
-    tendency: preset.traits.trim() || `${preset.mbtiCode.toUpperCase()} 倾向，未补充额外性格特征。`,
+    tendency:
+      preset.traits.trim() ||
+      (preset.mbtiCode.trim()
+        ? `${preset.mbtiCode.toUpperCase()} 倾向，未补充额外关系背景。`
+        : '未预设 MBTI，等待小镇互动自然显现倾向。'),
   }));
 }
 
 function mbtiToWeights(code: string): Partial<MbtiWeights> {
   const normalized = code.toUpperCase();
+  if (!normalized) {
+    return {};
+  }
   return {
     e: normalized.includes('E') ? 76 : 24,
     i: normalized.includes('I') ? 76 : 24,

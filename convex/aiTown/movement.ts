@@ -56,6 +56,7 @@ export function movePlayer(
 
 export function findRoute(game: Game, now: number, player: Player, destination: Point) {
   const minDistances: PathCandidate[][] = [];
+  const startingPosition = { x: player.position.x, y: player.position.y };
   const explore = (current: PathCandidate): Array<PathCandidate> => {
     const { x, y } = current.position;
     const neighbors = [];
@@ -114,8 +115,6 @@ export function findRoute(game: Game, now: number, player: Player, destination: 
     return next;
   };
 
-  const startingLocation = player.position;
-  const startingPosition = { x: startingLocation.x, y: startingLocation.y };
   let current: PathCandidate | undefined = {
     position: startingPosition,
     facing: player.facing,

@@ -15,6 +15,13 @@ crons.interval(
 
 crons.interval('restart dead worlds', { seconds: 60 }, internal.world.restartDeadWorlds);
 
+crons.interval(
+  'cleanup stale mbti experiments',
+  { seconds: 60 * 60 },
+  internal.mbti.cleanupStaleMbtiExperiments,
+  {},
+);
+
 crons.daily('vacuum old entries', { hourUTC: 4, minuteUTC: 20 }, internal.crons.vacuumOldEntries);
 
 export default crons;

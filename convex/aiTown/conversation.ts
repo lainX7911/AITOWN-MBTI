@@ -60,6 +60,15 @@ export class Conversation {
 
     const player1 = game.world.players.get(playerId1)!;
     const player2 = game.world.players.get(playerId2)!;
+    const player1CanRespond =
+      Boolean(player1.human) || [...game.world.agents.values()].some((agent) => agent.playerId === player1.id);
+    const player2CanRespond =
+      Boolean(player2.human) || [...game.world.agents.values()].some((agent) => agent.playerId === player2.id);
+    if (!player1CanRespond || !player2CanRespond) {
+      console.warn(`Stopping conversation ${this.id} with non-responsive participant`);
+      this.stop(game, now);
+      return;
+    }
 
     const playerDistance = distance(player1?.position, player2?.position);
 

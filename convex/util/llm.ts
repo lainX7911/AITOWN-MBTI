@@ -109,6 +109,20 @@ export function getLLMConfig(): LLMConfig {
   };
 }
 
+function getEmbeddingConfig(): LLMConfig {
+  if (process.env.EMBEDDING_PROVIDER === 'ollama') {
+    return {
+      provider: 'ollama',
+      url: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434',
+      chatModel: process.env.OLLAMA_MODEL ?? 'llama3',
+      embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'mxbai-embed-large',
+      stopWords: ['<|eot_id|>'],
+      apiKey: undefined,
+    };
+  }
+  return getLLMConfig();
+}
+
 const AuthHeaders = (): Record<string, string> =>
   getLLMConfig().apiKey
     ? {
@@ -203,7 +217,7 @@ export async function tryPullOllama(model: string, error: string) {
 }
 
 export async function fetchEmbeddingBatch(texts: string[]) {
-  const config = getLLMConfig();
+  const config = getEmbeddingConfig();
   if (config.provider === 'ollama') {
     return {
       ollama: true as const,
@@ -686,7 +700,7 @@ export class ChatCompletionContent {
 }
 
 export async function ollamaFetchEmbedding(text: string) {
-  const config = getLLMConfig();
+  const config = getEmbeddingConfig();
   const { result } = await retryWithBackoff(async () => {
     const resp = await fetch(config.url + '/api/embeddings', {
       method: 'POST',

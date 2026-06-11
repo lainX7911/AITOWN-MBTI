@@ -255,3 +255,51 @@ export const previousConversation = query({
     return null;
   },
 });
+
+export const previousConversations = query({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const members = ctx.db
+      .query('participatedTogether')
+      .withIndex('playerHistory', (q) => q.eq('worldId', args.worldId).eq('player1', args.playerId))
+      .order('desc');
+
+    const conversations = [];
+    const seen = new Set<string>();
+    for await (const member of members) {
+      if (seen.has(member.conversationId)) {
+        continue;
+      }
+      seen.add(member.conversationId);
+      const conversation = await ctx.db
+        .query('archivedConversations')
+        .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('id', member.conversationId))
+        .unique();
+      if (!conversation || conversation.numMessages === 0) {
+        continue;
+      }
+      const participantDescriptions = [];
+      for (const participantId of conversation.participants) {
+        const description = await ctx.db
+          .query('playerDescriptions')
+          .withIndex('worldId', (q) =>
+            q.eq('worldId', args.worldId).eq('playerId', participantId),
+          )
+          .first();
+        participantDescriptions.push({
+          playerId: participantId,
+          name: description?.name ?? participantId,
+        });
+      }
+      conversations.push({ ...conversation, participantDescriptions });
+      if (conversations.length >= (args.limit ?? 8)) {
+        break;
+      }
+    }
+    return conversations;
+  },
+});

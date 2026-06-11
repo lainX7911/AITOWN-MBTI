@@ -42,9 +42,10 @@ export async function rememberConversation(
   const llmMessages: LLMMessage[] = [
     {
       role: 'user',
-      content: `You are ${player.name}, and you just finished a conversation with ${otherPlayer.name}. I would
-      like you to summarize the conversation from ${player.name}'s perspective, using first-person pronouns like
-      "I," and add if you liked or disliked this interaction.`,
+      content: `你是“${player.name}”，刚刚和“${otherPlayer.name}”结束了一段对话。
+请从“${player.name}”第一人称视角，用中文总结这段互动。
+称呼规则：用“我”表达自己，用“你”称呼对话对象，不要用“他”“她”“TA”指代正在对话的 ${otherPlayer.name}。
+补充我喜欢或不喜欢这次互动的地方。`,
     },
   ];
   const authors = new Set<GameId<'players'>>();
@@ -54,17 +55,30 @@ export async function rememberConversation(
     const recipient = message.author === player.id ? otherPlayer : player;
     llmMessages.push({
       role: 'user',
-      content: `${author.name} to ${recipient.name}: ${message.text}`,
+      content: `${author.name} 对 ${recipient.name}：${message.text}`,
     });
   }
-  llmMessages.push({ role: 'user', content: 'Summary:' });
+  llmMessages.push({ role: 'user', content: '请输出中文记忆摘要：' });
   const { content } = await chatCompletion({
     messages: llmMessages,
     max_tokens: 500,
   });
-  const description = `Conversation with ${otherPlayer.name} at ${new Date(
+  const { content: innerThought } = await chatCompletion({
+    messages: [
+      {
+        role: 'user',
+        content: `你是“${player.name}”，刚刚和“${otherPlayer.name}”结束了一段对话。
+请写一段 50 字以内的第一人称内心想法，语言朴素，像自己在心里简单记一下。
+不要文艺化，不要小说旁白，不要括号动作，不要夸张情绪。
+称呼规则：用“我”表达自己；提到正在对话的 ${otherPlayer.name} 时优先用“你”或对方名字，不要用“他/她/TA”制造第三人称错位。
+对话摘要：${content}`,
+      },
+    ],
+    max_tokens: 80,
+  });
+  const description = `和 ${otherPlayer.name} 在 ${new Date(
     data.conversation._creationTime,
-  ).toLocaleString()}: ${content}`;
+  ).toLocaleString()} 的对话记忆：${content}`;
   const importance = await calculateImportance(description);
   const { embedding } = await fetchEmbedding(description);
   authors.delete(player.id as GameId<'players'>);
@@ -80,6 +94,12 @@ export async function rememberConversation(
       playerIds: [...authors],
     },
     embedding,
+  });
+  await ctx.runMutation(selfInternal.insertInnerThought, {
+    worldId,
+    playerId: player.id,
+    text: innerThought.trim(),
+    source: `和${otherPlayer.name}对话后`,
   });
   await reflectOnMemories(ctx, worldId, playerId);
   return description;
@@ -169,7 +189,7 @@ export async function searchMemories(
   const rankedMemories = await ctx.runMutation(selfInternal.rankAndTouchMemories, {
     candidates,
     n,
-  });
+  }) as Array<{ memory: Memory }>;
   return rankedMemories.map(({ memory }) => memory);
 }
 
@@ -181,6 +201,9 @@ function makeRange(values: number[]) {
 
 function normalize(value: number, range: readonly [number, number]) {
   const [min, max] = range;
+  if (max === min) {
+    return 0;
+  }
   return (value - min) / (max - min);
 }
 
@@ -191,14 +214,24 @@ export const rankAndTouchMemories = internalMutation({
   },
   handler: async (ctx, args) => {
     const ts = Date.now();
-    const relatedMemories = await asyncMap(args.candidates, async ({ _id }) => {
+    const relatedMemoryPairs = await asyncMap(args.candidates, async (candidate) => {
       const memory = await ctx.db
         .query('memories')
-        .withIndex('embeddingId', (q) => q.eq('embeddingId', _id))
+        .withIndex('embeddingId', (q) => q.eq('embeddingId', candidate._id))
         .first();
-      if (!memory) throw new Error(`Memory for embedding ${_id} not found`);
-      return memory;
+      if (!memory) {
+        await ctx.db.delete(candidate._id);
+        return null;
+      }
+      return { candidate, memory };
     });
+    const validMemoryPairs = relatedMemoryPairs.filter(
+      (pair): pair is NonNullable<typeof pair> => pair !== null,
+    );
+    if (validMemoryPairs.length === 0) {
+      return [];
+    }
+    const relatedMemories = validMemoryPairs.map(({ memory }) => memory);
 
     // TODO: fetch <count> recent memories and <count> important memories
     // so we don't miss them in case they were a little less relevant.
@@ -206,13 +239,13 @@ export const rankAndTouchMemories = internalMutation({
       const hoursSinceAccess = (ts - memory.lastAccess) / 1000 / 60 / 60;
       return 0.99 ** Math.floor(hoursSinceAccess);
     });
-    const relevanceRange = makeRange(args.candidates.map((c) => c._score));
+    const relevanceRange = makeRange(validMemoryPairs.map(({ candidate }) => candidate._score));
     const importanceRange = makeRange(relatedMemories.map((m) => m.importance));
     const recencyRange = makeRange(recencyScore);
-    const memoryScores = relatedMemories.map((memory, idx) => ({
+    const memoryScores = validMemoryPairs.map(({ candidate, memory }, idx) => ({
       memory,
       overallScore:
-        normalize(args.candidates[idx]._score, relevanceRange) +
+        normalize(candidate._score, relevanceRange) +
         normalize(memory.importance, importanceRange) +
         normalize(recencyScore[idx], recencyRange),
     }));
@@ -288,6 +321,18 @@ export const insertMemory = internalMutation({
   },
 });
 
+export const insertInnerThought = internalMutation({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+    text: v.string(),
+    source: v.string(),
+  },
+  handler: async (ctx, args): Promise<void> => {
+    await ctx.db.insert('innerThoughts', args);
+  },
+});
+
 export const insertReflectionMemories = internalMutation({
   args: {
     worldId: v.id('worlds'),
@@ -327,14 +372,14 @@ async function reflectOnMemories(
   worldId: Id<'worlds'>,
   playerId: GameId<'players'>,
 ) {
-  const { memories, lastReflectionTs, name } = await ctx.runQuery(
+  const { memories, lastReflectionTs, name } = (await ctx.runQuery(
     internal.agent.memory.getReflectionMemories,
     {
       worldId,
       playerId,
       numberOfItems: 100,
     },
-  );
+  )) as { memories: Memory[]; lastReflectionTs?: number; name: string };
 
   // should only reflect if lastest 100 items have importance score of >500
   const sumOfImportanceScore = memories
