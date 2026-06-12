@@ -134,6 +134,7 @@ const AuthHeaders = (): Record<string, string> =>
 export async function chatCompletion(
   body: Omit<CreateChatCompletionRequest, 'model'> & {
     model?: CreateChatCompletionRequest['model'];
+    timeoutMs?: number;
   } & {
     stream?: false | null | undefined;
   },
@@ -142,6 +143,7 @@ export async function chatCompletion(
 export async function chatCompletion(
   body: Omit<CreateChatCompletionRequest, 'model'> & {
     model?: CreateChatCompletionRequest['model'];
+    timeoutMs?: number;
   } & {
     stream?: true;
   },
@@ -149,9 +151,12 @@ export async function chatCompletion(
 export async function chatCompletion(
   body: Omit<CreateChatCompletionRequest, 'model'> & {
     model?: CreateChatCompletionRequest['model'];
+    timeoutMs?: number;
   },
 ) {
   const config = getLLMConfig();
+  const timeoutMs = body.timeoutMs;
+  delete body.timeoutMs;
   body.model = body.model ?? config.chatModel;
   const stopWords = body.stop ? (typeof body.stop === 'string' ? [body.stop] : body.stop) : [];
   if (config.stopWords) stopWords.push(...config.stopWords);
@@ -161,14 +166,22 @@ export async function chatCompletion(
     retries,
     ms,
   } = await retryWithBackoff(async () => {
+    const controller = timeoutMs ? new AbortController() : undefined;
+    const timeout = timeoutMs
+      ? setTimeout(() => controller?.abort(), timeoutMs)
+      : undefined;
     const result = await fetch(config.url + '/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...AuthHeaders(),
       },
-
+      signal: controller?.signal,
       body: JSON.stringify(body),
+    }).finally(() => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
     });
     if (!result.ok) {
       const error = await result.text();
@@ -714,7 +727,18 @@ export async function ollamaFetchEmbedding(text: string) {
       await tryPullOllama(config.embeddingModel, error);
       throw new Error(`Failed to fetch embeddings: ${resp.status}`);
     }
-    return (await resp.json()).embedding as number[];
+    if (!resp.ok) {
+      throw {
+        retry: resp.status === 429 || resp.status >= 500,
+        error: new Error(`Failed to fetch embeddings: ${resp.status}: ${await resp.text()}`),
+      };
+    }
+    const json = await resp.json();
+    const embedding = json.embedding as number[] | undefined;
+    if (!Array.isArray(embedding) || embedding.length === 0) {
+      throw new Error(`Embedding response did not include a valid embedding: ${JSON.stringify(json).slice(0, 300)}`);
+    }
+    return embedding;
   });
   return { embedding: result };
 }

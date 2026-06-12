@@ -63,6 +63,7 @@ export type SocialActor = {
 };
 
 export type RolePreset = {
+  id: string;
   enabled: boolean;
   role: ActorRole;
   label: string;

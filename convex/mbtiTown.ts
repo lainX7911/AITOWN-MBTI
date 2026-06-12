@@ -29,6 +29,10 @@ const questionFocus = v.object({
   theoreticalBasis: v.optional(v.array(v.string())),
   evidenceTargets: v.array(v.string()),
   eventBeats: v.array(v.string()),
+  startupQuestions: v.optional(v.array(v.object({
+    question: v.string(),
+    options: v.array(v.string()),
+  }))),
   outcomeHypotheses: v.optional(v.array(v.object({
     label: v.string(),
     plainConclusion: v.string(),
@@ -45,6 +49,7 @@ const questionFocus = v.object({
     questionLink: v.optional(v.string()),
     informationGoal: v.string(),
     judgmentSignal: v.string(),
+    responseOptions: v.optional(v.array(v.string())),
   }))),
   resolutionCriteria: v.string(),
 });
@@ -164,7 +169,7 @@ export const createSceneRequest = mutation({
     townId: v.optional(v.id('mbtiTownProfiles')),
     question: v.string(),
     userEntryMode,
-    plannedFocus: v.optional(questionFocus),
+    plannedFocus: questionFocus,
   },
   handler: async (ctx, args) => {
     const town = args.townId ? await ctx.db.get(args.townId) : await getDefaultTownProfile(ctx);
@@ -235,12 +240,10 @@ export const createSceneRequest = mutation({
         locationKey,
       })),
     } satisfies SceneSelectionInput);
-    const questionFocus = args.plannedFocus ?? selection.questionFocus;
+    const questionFocus = args.plannedFocus;
     const selectionRationale = [
       ...selection.rationale,
-      args.plannedFocus
-        ? '入镇前已由 LLM 生成隐性场景计划；角色只接收关系背景和事件，不直接接收用户原题。'
-        : 'LLM 场景计划不可用，使用确定性场景计划 fallback。',
+      '入镇前已由 LLM 生成隐性场景计划和启动前关键问题；角色只接收关系背景和事件，不直接接收用户原题。',
     ];
     const now = Date.now();
     const sceneRequestId = await ctx.db.insert('mbtiSceneRequests', {

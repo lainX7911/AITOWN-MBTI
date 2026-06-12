@@ -30,8 +30,16 @@ export function eventStatusLabel(status: EventProgressStatus) {
       return '等待相关对话';
     case 'triggered':
       return '已触发，等证据';
+    case 'pending_user_response':
+      return '待你回应';
     case 'observed':
       return '已有证据';
+    case 'responded':
+      return '已记录真实回应';
+    case 'skipped':
+      return '已跳过回应';
+    case 'expired_to_stage_report':
+      return '已转阶段报告';
     case 'resolved':
       return '已纳入结论';
     case 'failed':
@@ -78,6 +86,48 @@ export function plannedEventSections(description: string) {
     informationGoal: pickSection(normalized, '想获得的信息', '可评判信号') ?? '',
     judgmentSignal: pickSection(normalized, '可评判信号') ?? '',
   };
+}
+
+export type PlannedEventSections = ReturnType<typeof plannedEventSections>;
+
+export function eventResponsePrompt(planned: PlannedEventSections, title: string) {
+  const trigger = planned.trigger || title;
+  const axis = planned.observationAxis || planned.informationGoal || '你的真实选择';
+  return `如果你真的遇到「${compactText(trigger, 42)}」，在“${compactText(axis, 24)}”这个问题上，你最接近哪种反应？`;
+}
+
+export function eventResponseOptions(planned: PlannedEventSections, title: string) {
+  const axis = `${planned.observationAxis} ${planned.questionLink} ${planned.informationGoal} ${title}`;
+  if (/收入|稳定|风险|现金|钱|成本|安全|工作|辞职|创业/.test(axis)) {
+    return [
+      '我会先确认收入、住处或基本保障是否稳妥',
+      '我会继续争取自己想要的选择',
+      '我会先准备一个过渡办法再决定',
+      '这个情境不符合我',
+    ];
+  }
+  if (/关系|伴侣|对象|家人|沟通|修复|边界|误解/.test(axis)) {
+    return [
+      '我会直接把担心和需求说清楚',
+      '我会先退开，等情绪稳定后再谈',
+      '我会说明我不能接受的边界',
+      '这个情境不符合我',
+    ];
+  }
+  if (/信息|不确定|核实|确认|选择|冲突|排序|优先级/.test(axis)) {
+    return [
+      '我会先问清楚关键信息再决定',
+      '我会按原计划继续推进',
+      '我会改用另一个可行方案',
+      '这个情境不符合我',
+    ];
+  }
+  return [
+    '我会先处理眼前最具体的问题',
+    '我会先观察一下，不马上表态',
+    '我会换一个更可行的办法',
+    '这个情境不符合我',
+  ];
 }
 
 function pickSection(text: string, startLabel: string, endLabel?: string) {

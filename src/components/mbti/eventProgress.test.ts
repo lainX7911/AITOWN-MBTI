@@ -1,5 +1,7 @@
 import {
   eventResultSummary,
+  eventResponseOptions,
+  eventResponsePrompt,
   eventStatusLabel,
   guidanceResultText,
   plannedEventSections,
@@ -12,7 +14,11 @@ describe('MBTI event progress copy', () => {
     expect(eventStatusLabel('moving')).toBe('正在进入现场');
     expect(eventStatusLabel('conversation_pending')).toBe('等待相关对话');
     expect(eventStatusLabel('triggered')).toBe('已触发，等证据');
+    expect(eventStatusLabel('pending_user_response')).toBe('待你回应');
     expect(eventStatusLabel('observed')).toBe('已有证据');
+    expect(eventStatusLabel('responded')).toBe('已记录真实回应');
+    expect(eventStatusLabel('skipped')).toBe('已跳过回应');
+    expect(eventStatusLabel('expired_to_stage_report')).toBe('已转阶段报告');
     expect(eventStatusLabel('resolved')).toBe('已纳入结论');
     expect(eventStatusLabel('failed')).toBe('触发失败');
   });
@@ -80,6 +86,35 @@ describe('MBTI event progress copy', () => {
     expect(sections.questionLink).toContain('计划被打断');
     expect(sections.informationGoal).toContain('折中');
     expect(sections.judgmentSignal).toContain('空间被压缩');
+  });
+
+  test('turns relationship probes into understandable response choices', () => {
+    const sections = plannedEventSections(
+      '场景：公寓走廊 具体事情：关键对象又把约好的沟通推迟，只说以后再聊 参与者：我、关键对象 观察维度：关系边界与沟通意愿 问题关联：测试我面对伴侣模糊回应时是否还愿意继续投入 想获得的信息：看我会直接说清担心还是先退开 可评判信号：表达边界、退开、继续追问',
+    );
+
+    expect(eventResponsePrompt(sections, '沟通被推迟')).toContain('如果你真的遇到');
+    expect(eventResponsePrompt(sections, '沟通被推迟')).toContain('关键对象又把约好的沟通推迟');
+    expect(eventResponseOptions(sections, '沟通被推迟')).toEqual([
+      '我会直接把担心和需求说清楚',
+      '我会先退开，等情绪稳定后再谈',
+      '我会说明我不能接受的边界',
+      '这个情境不符合我',
+    ]);
+  });
+
+  test('turns work and money probes into concrete response choices', () => {
+    const sections = plannedEventSections(
+      '场景：社区办公室 具体事情：新机会提前，但下个月现金流和合同限制还没解决 参与者：我、常驻居民A 观察维度：稳定性和自主性的取舍 问题关联：测试辞职或创业前是否能承受风险 想获得的信息：看我会保留退路还是继续争取自主 可评判信号：过渡方案、最低收入、风险底线',
+    );
+
+    expect(eventResponseOptions(sections, '机会提前')).toEqual([
+      '我会先确认收入、住处或基本保障是否稳妥',
+      '我会继续争取自己想要的选择',
+      '我会先准备一个过渡办法再决定',
+      '这个情境不符合我',
+    ]);
+    expect(eventResponseOptions(sections, '机会提前').join('')).not.toContain('基本盘');
   });
 
   test('only keeps chat lines related to the triggered event evidence', () => {

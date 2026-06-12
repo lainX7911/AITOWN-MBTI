@@ -46,6 +46,7 @@ export default defineSchema({
     updatedAt: v.number(),
     status: v.union(
       v.literal('creating'),
+      v.literal('awaiting_user_responses'),
       v.literal('running'),
       v.literal('complete'),
       v.literal('failed'),
@@ -109,6 +110,16 @@ export default defineSchema({
           why: v.string(),
           signals: v.array(v.string()),
         }))),
+        evidenceLevel: v.optional(v.union(
+          v.literal('level_0'),
+          v.literal('level_1'),
+          v.literal('level_2'),
+          v.literal('level_3'),
+        )),
+        realUserResponseCount: v.optional(v.number()),
+        requiredUserResponseCount: v.optional(v.number()),
+        missingUserResponseCount: v.optional(v.number()),
+        confidenceNotice: v.optional(v.string()),
         limits: v.string(),
       }),
     ),
@@ -127,6 +138,10 @@ export default defineSchema({
         theoreticalBasis: v.optional(v.array(v.string())),
         evidenceTargets: v.array(v.string()),
         eventBeats: v.array(v.string()),
+        startupQuestions: v.optional(v.array(v.object({
+          question: v.string(),
+          options: v.array(v.string()),
+        }))),
         outcomeHypotheses: v.optional(v.array(v.object({
           label: v.string(),
           plainConclusion: v.string(),
@@ -143,10 +158,24 @@ export default defineSchema({
           questionLink: v.optional(v.string()),
           informationGoal: v.string(),
           judgmentSignal: v.string(),
+          responseOptions: v.optional(v.array(v.string())),
         }))),
         resolutionCriteria: v.string(),
       }),
     ),
+    decisionState: v.optional(v.object({
+      updatedAt: v.number(),
+      resolvedVariables: v.array(v.string()),
+      uncertainVariables: v.array(v.string()),
+      confirmedConstraints: v.array(v.string()),
+      sensitiveConditions: v.array(v.string()),
+      responseCoverage: v.object({
+        responded: v.number(),
+        required: v.number(),
+        missing: v.number(),
+      }),
+      lastUserCorrection: v.optional(v.string()),
+    })),
     agentInputIds: v.array(v.id('inputs')),
     socialField: v.object({
       minimumAgents: v.number(),
@@ -170,12 +199,35 @@ export default defineSchema({
     title: v.string(),
     description: v.string(),
     involvedRoles: v.array(v.string()),
+    testedVariable: v.optional(v.string()),
+    testedHypotheses: v.optional(v.array(v.string())),
+    questionLink: v.optional(v.string()),
+    informationGoal: v.optional(v.string()),
+    expectedSignals: v.optional(v.array(v.string())),
+    responseOptions: v.optional(v.array(v.string())),
+    biasDirection: v.optional(v.union(
+      v.literal('balanced'),
+      v.literal('supporting'),
+      v.literal('challenging'),
+    )),
+    probeOrigin: v.optional(v.union(
+      v.literal('initial'),
+      v.literal('adaptive'),
+      v.literal('calibration'),
+    )),
+    adaptiveReason: v.optional(v.string()),
+    residentRoles: v.optional(v.array(v.string())),
+    residentParticipationGoal: v.optional(v.string()),
     status: v.union(
       v.literal('seeded'),
       v.literal('moving'),
       v.literal('conversation_pending'),
       v.literal('triggered'),
+      v.literal('pending_user_response'),
       v.literal('observed'),
+      v.literal('responded'),
+      v.literal('skipped'),
+      v.literal('expired_to_stage_report'),
       v.literal('resolved'),
       v.literal('failed'),
     ),
@@ -203,6 +255,30 @@ export default defineSchema({
     .index('experiment_event', ['experimentId', 'mbtiEventId', 'createdAt'])
     .index('world_time', ['worldId', 'createdAt'])
     .index('source', ['worldId', 'kind', 'sourceId']),
+
+  mbtiUserResponses: defineTable({
+    experimentId: v.id('mbtiExperiments'),
+    mbtiEventId: v.id('mbtiEvents'),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    selectedOption: v.string(),
+    confidence: v.number(),
+    emotions: v.array(v.string()),
+    freeText: v.string(),
+    scenarioFit: v.union(
+      v.literal('fits'),
+      v.literal('partial'),
+      v.literal('not_fit'),
+    ),
+    correctionText: v.optional(v.string()),
+    responseStatus: v.union(
+      v.literal('responded'),
+      v.literal('skipped'),
+      v.literal('expired_to_stage_report'),
+    ),
+  })
+    .index('experiment_event', ['experimentId', 'mbtiEventId'])
+    .index('experiment_time', ['experimentId', 'createdAt']),
 
   mbtiBehaviorEvents: defineTable({
     experimentId: v.id('mbtiExperiments'),
@@ -340,6 +416,10 @@ export default defineSchema({
         theoreticalBasis: v.optional(v.array(v.string())),
         evidenceTargets: v.array(v.string()),
         eventBeats: v.array(v.string()),
+        startupQuestions: v.optional(v.array(v.object({
+          question: v.string(),
+          options: v.array(v.string()),
+        }))),
         outcomeHypotheses: v.optional(v.array(v.object({
           label: v.string(),
           plainConclusion: v.string(),
@@ -356,6 +436,7 @@ export default defineSchema({
           questionLink: v.optional(v.string()),
           informationGoal: v.string(),
           judgmentSignal: v.string(),
+          responseOptions: v.optional(v.array(v.string())),
         }))),
         resolutionCriteria: v.string(),
       }),

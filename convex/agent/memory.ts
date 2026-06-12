@@ -80,28 +80,43 @@ export async function rememberConversation(
     data.conversation._creationTime,
   ).toLocaleString()} 的对话记忆：${content}`;
   const importance = await calculateImportance(description);
-  const { embedding } = await fetchEmbedding(description);
-  authors.delete(player.id as GameId<'players'>);
-  await ctx.runMutation(selfInternal.insertMemory, {
-    agentId,
-    playerId: player.id,
-    description,
-    importance,
-    lastAccess: messages[messages.length - 1]._creationTime,
-    data: {
-      type: 'conversation',
-      conversationId,
-      playerIds: [...authors],
-    },
-    embedding,
-  });
+  let wroteMemory = false;
+  try {
+    const { embedding } = await fetchEmbedding(description);
+    if (!Array.isArray(embedding) || embedding.length === 0) {
+      throw new Error('Embedding result was empty.');
+    }
+    authors.delete(player.id as GameId<'players'>);
+    await ctx.runMutation(selfInternal.insertMemory, {
+      agentId,
+      playerId: player.id,
+      description,
+      importance,
+      lastAccess: messages[messages.length - 1]._creationTime,
+      data: {
+        type: 'conversation',
+        conversationId,
+        playerIds: [...authors],
+      },
+      embedding,
+    });
+    wroteMemory = true;
+  } catch (error) {
+    console.warn(
+      `Skipping vector memory for ${player.name}/${conversationId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
   await ctx.runMutation(selfInternal.insertInnerThought, {
     worldId,
     playerId: player.id,
     text: innerThought.trim(),
     source: `和${otherPlayer.name}对话后`,
   });
-  await reflectOnMemories(ctx, worldId, playerId);
+  if (wroteMemory) {
+    await reflectOnMemories(ctx, worldId, playerId);
+  }
   return description;
 }
 

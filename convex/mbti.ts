@@ -28,6 +28,7 @@ const MBTI_EXPERIMENTS_TO_KEEP = 12;
 const MBTI_COMPLETED_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const MBTI_STALE_ACTIVE_RETENTION_MS = 2 * 60 * 60 * 1000;
 const MBTI_RUNTIME_DELETE_GRACE_MS = 30 * 1000;
+const MBTI_DELETE_BATCH_SIZE = 20;
 const ensureResidentInteractionRef = makeFunctionReference<'action'>('mbti:ensureResidentInteraction') as any;
 
 const weights = v.object({
@@ -86,6 +87,10 @@ const questionFocus = v.object({
   theoreticalBasis: v.optional(v.array(v.string())),
   evidenceTargets: v.array(v.string()),
   eventBeats: v.array(v.string()),
+  startupQuestions: v.optional(v.array(v.object({
+    question: v.string(),
+    options: v.array(v.string()),
+  }))),
   outcomeHypotheses: v.optional(v.array(v.object({
     label: v.string(),
     plainConclusion: v.string(),
@@ -102,6 +107,7 @@ const questionFocus = v.object({
     questionLink: v.optional(v.string()),
     informationGoal: v.string(),
     judgmentSignal: v.string(),
+    responseOptions: v.optional(v.array(v.string())),
   }))),
   resolutionCriteria: v.string(),
 });
@@ -147,6 +153,10 @@ type QuestionFocusInput = {
   theoreticalBasis?: string[];
   evidenceTargets: string[];
   eventBeats: string[];
+  startupQuestions?: Array<{
+    question: string;
+    options: string[];
+  }>;
   outcomeHypotheses?: Array<{
     label: string;
     plainConclusion: string;
@@ -163,6 +173,7 @@ type QuestionFocusInput = {
     questionLink?: string;
     informationGoal: string;
     judgmentSignal: string;
+    responseOptions?: string[];
   }>;
   resolutionCriteria: string;
 };
@@ -180,6 +191,11 @@ type MbtiReport = {
     why: string;
     signals: string[];
   }>;
+  evidenceLevel?: 'level_0' | 'level_1' | 'level_2' | 'level_3';
+  realUserResponseCount?: number;
+  requiredUserResponseCount?: number;
+  missingUserResponseCount?: number;
+  confidenceNotice?: string;
   limits: string;
 };
 
@@ -310,13 +326,8 @@ export const createExperiment = mutation({
       targetEventCount,
       args.questionFocus,
     );
-    const eventWindowMs = Math.max(MBTI_SCENE_EVENT_MIN_GAP_MS, durationMs - 45 * 1000);
-    const eventStepMs = Math.max(
-      MBTI_SCENE_EVENT_MIN_GAP_MS,
-      Math.floor(eventWindowMs / Math.max(1, seededEvents.length)),
-    );
-    for (const [index, event] of seededEvents.entries()) {
-      const eventId = await ctx.db.insert('mbtiEvents', {
+    for (const event of seededEvents) {
+      await ctx.db.insert('mbtiEvents', {
         experimentId,
         worldId,
         createdAt: now,
@@ -325,82 +336,34 @@ export const createExperiment = mutation({
         title: event.title,
         description: event.description,
         involvedRoles: event.involvedRoles,
+        testedVariable: event.testedVariable,
+        testedHypotheses: event.testedHypotheses,
+        questionLink: event.questionLink,
+        informationGoal: event.informationGoal,
+        expectedSignals: event.expectedSignals,
+        responseOptions: event.responseOptions,
+        biasDirection: event.biasDirection,
+        probeOrigin: event.probeOrigin,
+        ...optionalAdaptiveReason(event),
+        residentRoles: event.residentRoles,
+        residentParticipationGoal: event.residentParticipationGoal,
         status: 'seeded',
       });
-      const triggerDelay = Math.min(durationMs - 15 * 1000, eventStepMs * (index + 1));
-      if (triggerDelay > 0) {
-        await ctx.scheduler.runAfter(triggerDelay, internal.mbti.triggerSceneEvent, {
-          experimentId,
-          eventId,
-        });
-      }
     }
 
     await ctx.db.patch(experimentId, {
       updatedAt: Date.now(),
-      status: 'running',
+      status: 'awaiting_user_responses',
       agentInputIds: [sceneInputId],
     });
     if (args.sceneRequestId) {
       await ctx.db.patch(args.sceneRequestId, {
         updatedAt: Date.now(),
-        status: 'running',
+        status: 'planned',
         worldId,
         experimentId,
       });
     }
-    await ctx.scheduler.runAfter(0, internal.aiTown.main.runStep, {
-      worldId,
-      generationNumber: engine.generationNumber,
-      maxDuration: ENGINE_ACTION_DURATION,
-    });
-    await ctx.scheduler.runAfter(MBTI_SCENE_MESSAGE_INTERVAL_MS, internal.mbti.keepConversationPaced, {
-      experimentId,
-      attempt: 1,
-    });
-    await ctx.scheduler.runAfter(MBTI_BACKGROUND_WANDER_INTERVAL_MS, internal.mbti.wanderBackgroundResidents, {
-      experimentId,
-      attempt: 1,
-    });
-    await ctx.scheduler.runAfter(MBTI_TOWN_DAILY_EVENT_INTERVAL_MS, internal.mbti.triggerTownDailyEvent, {
-      experimentId,
-      attempt: 1,
-    });
-    const focusName = socialRoles[0]?.label.trim();
-    if (focusName) {
-      await ctx.scheduler.runAfter(MBTI_FOCUS_CONVERSATION_INTERVAL_MS, internal.mbti.ensureFocusConversation, {
-        experimentId,
-        focusName,
-        attempt: 1,
-      });
-      await ctx.scheduler.runAfter(
-        MBTI_RESIDENT_INTERACTION_INTERVAL_MS,
-        ensureResidentInteractionRef,
-        {
-          experimentId,
-          focusName,
-          attempt: 1,
-        },
-      );
-      for (
-        let attempt = 2;
-        attempt * MBTI_RESIDENT_INTERACTION_INTERVAL_MS < durationMs;
-        attempt++
-      ) {
-        await ctx.scheduler.runAfter(
-          attempt * MBTI_RESIDENT_INTERACTION_INTERVAL_MS,
-          ensureResidentInteractionRef,
-          {
-            experimentId,
-            focusName,
-            attempt,
-          },
-        );
-      }
-    }
-    await ctx.scheduler.runAfter(durationMs, internal.mbti.finalizeExperiment, {
-      experimentId,
-    });
 
     return {
       experimentId,
@@ -410,6 +373,122 @@ export const createExperiment = mutation({
     };
   },
 });
+
+export const startExperimentEvolution = mutation({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    if (!experiment) {
+      throw new Error('Experiment not found.');
+    }
+    if (experiment.status === 'running') {
+      return { started: false, status: experiment.status };
+    }
+    if (experiment.status !== 'awaiting_user_responses') {
+      throw new Error(`Experiment cannot be started from status ${experiment.status}.`);
+    }
+    await ctx.db.patch(args.experimentId, {
+      updatedAt: Date.now(),
+      status: 'running',
+    });
+    if (experiment.sceneRequestId) {
+      await ctx.db.patch(experiment.sceneRequestId, {
+        updatedAt: Date.now(),
+        status: 'running',
+        worldId: experiment.worldId,
+        experimentId: experiment._id,
+      });
+    }
+    await scheduleExperimentEvolution(ctx, experiment);
+    return { started: true, status: 'running' };
+  },
+});
+
+async function scheduleExperimentEvolution(
+  ctx: MutationCtx,
+  experiment: Doc<'mbtiExperiments'>,
+) {
+  const engine = await ctx.db.get(experiment.engineId);
+  if (!engine) {
+    throw new Error('Experiment engine not found.');
+  }
+  const durationMs = normalizeObservationDuration(
+    experiment.observation.durationMs,
+    experiment.observation.runCount,
+  );
+  const events = await ctx.db
+    .query('mbtiEvents')
+    .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
+    .collect();
+  const eventWindowMs = Math.max(MBTI_SCENE_EVENT_MIN_GAP_MS, durationMs - 45 * 1000);
+  const eventStepMs = Math.max(
+    MBTI_SCENE_EVENT_MIN_GAP_MS,
+    Math.floor(eventWindowMs / Math.max(1, events.length)),
+  );
+  for (const [index, event] of events.entries()) {
+    const triggerDelay = Math.min(durationMs - 15 * 1000, eventStepMs * (index + 1));
+    if (triggerDelay > 0) {
+      await ctx.scheduler.runAfter(triggerDelay, internal.mbti.triggerSceneEvent, {
+        experimentId: experiment._id,
+        eventId: event._id,
+      });
+    }
+  }
+  await ctx.scheduler.runAfter(0, internal.aiTown.main.runStep, {
+    worldId: experiment.worldId,
+    generationNumber: engine.generationNumber,
+    maxDuration: ENGINE_ACTION_DURATION,
+  });
+  await ctx.scheduler.runAfter(MBTI_SCENE_MESSAGE_INTERVAL_MS, internal.mbti.keepConversationPaced, {
+    experimentId: experiment._id,
+    attempt: 1,
+  });
+  await ctx.scheduler.runAfter(MBTI_BACKGROUND_WANDER_INTERVAL_MS, internal.mbti.wanderBackgroundResidents, {
+    experimentId: experiment._id,
+    attempt: 1,
+  });
+  await ctx.scheduler.runAfter(MBTI_TOWN_DAILY_EVENT_INTERVAL_MS, internal.mbti.triggerTownDailyEvent, {
+    experimentId: experiment._id,
+    attempt: 1,
+  });
+  const focusName = experiment.rolePresets.find((role) => role.enabled)?.label.trim();
+  if (focusName) {
+    await ctx.scheduler.runAfter(MBTI_FOCUS_CONVERSATION_INTERVAL_MS, internal.mbti.ensureFocusConversation, {
+      experimentId: experiment._id,
+      focusName,
+      attempt: 1,
+    });
+    await ctx.scheduler.runAfter(
+      MBTI_RESIDENT_INTERACTION_INTERVAL_MS,
+      ensureResidentInteractionRef,
+      {
+        experimentId: experiment._id,
+        focusName,
+        attempt: 1,
+      },
+    );
+    for (
+      let attempt = 2;
+      attempt * MBTI_RESIDENT_INTERACTION_INTERVAL_MS < durationMs;
+      attempt++
+    ) {
+      await ctx.scheduler.runAfter(
+        attempt * MBTI_RESIDENT_INTERACTION_INTERVAL_MS,
+        ensureResidentInteractionRef,
+        {
+          experimentId: experiment._id,
+          focusName,
+          attempt,
+        },
+      );
+    }
+  }
+  await ctx.scheduler.runAfter(durationMs, internal.mbti.finalizeExperiment, {
+    experimentId: experiment._id,
+  });
+}
 
 export const ensureResidentInteraction: any = internalAction({
   args: {
@@ -714,7 +793,18 @@ export const recordTriggeredSceneEvent = internalMutation({
   handler: async (ctx, args) => {
     const participantIds = await resolveParticipantIds(ctx, args.worldId, args.participantIds);
     const now = Date.now();
-    await ctx.db.patch(args.eventId, { status: 'triggered' });
+    const existingUserResponse = await ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_event', (q) =>
+        q.eq('experimentId', args.experimentId).eq('mbtiEventId', args.eventId),
+      )
+      .first();
+    const nextStatus = existingUserResponse?.responseStatus === 'responded'
+      ? 'responded'
+      : existingUserResponse?.responseStatus === 'skipped'
+      ? 'skipped'
+      : 'pending_user_response';
+    await ctx.db.patch(args.eventId, { status: nextStatus });
     const socialEventId = await ctx.db.insert('socialEvents', {
       worldId: args.worldId,
       createdAt: now,
@@ -1093,7 +1183,11 @@ export const updateEventStatus = internalMutation({
       v.literal('moving'),
       v.literal('conversation_pending'),
       v.literal('triggered'),
+      v.literal('pending_user_response'),
       v.literal('observed'),
+      v.literal('responded'),
+      v.literal('skipped'),
+      v.literal('expired_to_stage_report'),
       v.literal('resolved'),
       v.literal('failed'),
     ),
@@ -1103,7 +1197,10 @@ export const updateEventStatus = internalMutation({
     if (!event) {
       return { updated: false };
     }
-    if (event.status === 'resolved' && args.status !== 'resolved') {
+    if (
+      ['responded', 'skipped', 'expired_to_stage_report', 'resolved'].includes(event.status) &&
+      !['responded', 'skipped', 'expired_to_stage_report', 'resolved'].includes(args.status)
+    ) {
       return { updated: false, reason: 'already-resolved' };
     }
     await ctx.db.patch(args.eventId, { status: args.status });
@@ -1426,6 +1523,10 @@ export const getExperiment = query({
       .query('mbtiEventEvidence')
       .withIndex('world_time', (q) => q.eq('worldId', experiment.worldId))
       .take(320);
+    const userResponses = await ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_time', (q) => q.eq('experimentId', experiment._id))
+      .collect();
     const archivedConversations = await ctx.db
       .query('archivedConversations')
       .withIndex('worldId', (q) => q.eq('worldId', experiment.worldId))
@@ -1447,6 +1548,7 @@ export const getExperiment = query({
       playerDescriptions,
       events,
       eventEvidence,
+      userResponses,
       behaviorEvents,
       innerThoughts,
       socialEvents,
@@ -1455,6 +1557,354 @@ export const getExperiment = query({
     };
   },
 });
+
+export const submitUserResponse = mutation({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+    mbtiEventId: v.id('mbtiEvents'),
+    selectedOption: v.string(),
+    confidence: v.number(),
+    emotions: v.array(v.string()),
+    freeText: v.string(),
+    scenarioFit: v.union(
+      v.literal('fits'),
+      v.literal('partial'),
+      v.literal('not_fit'),
+    ),
+    correctionText: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    const event = await ctx.db.get(args.mbtiEventId);
+    if (!experiment || !event || event.experimentId !== experiment._id) {
+      throw new Error('Invalid MBTI user response target.');
+    }
+    const now = Date.now();
+    const existing = await ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_event', (q) =>
+        q.eq('experimentId', args.experimentId).eq('mbtiEventId', args.mbtiEventId),
+      )
+      .first();
+    const payload = {
+      updatedAt: now,
+      selectedOption: args.selectedOption.trim().slice(0, 80),
+      confidence: Math.max(1, Math.min(7, Math.round(args.confidence))),
+      emotions: args.emotions.map((emotion) => emotion.trim()).filter(Boolean).slice(0, 6),
+      freeText: args.freeText.trim().slice(0, 1200),
+      scenarioFit: args.scenarioFit,
+      correctionText: args.correctionText?.trim().slice(0, 1200) || undefined,
+      responseStatus: 'responded' as const,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, payload);
+      if (!['seeded', 'moving', 'conversation_pending'].includes(event.status)) {
+        await ctx.db.patch(args.mbtiEventId, { status: 'responded' });
+      }
+      await refreshDecisionState(ctx, args.experimentId);
+      return { responseId: existing._id, updated: true };
+    }
+    const responseId = await ctx.db.insert('mbtiUserResponses', {
+      experimentId: args.experimentId,
+      mbtiEventId: args.mbtiEventId,
+      createdAt: now,
+      ...payload,
+    });
+    if (!['seeded', 'moving', 'conversation_pending'].includes(event.status)) {
+      await ctx.db.patch(args.mbtiEventId, { status: 'responded' });
+    }
+    await refreshDecisionState(ctx, args.experimentId);
+    return { responseId, updated: false };
+  },
+});
+
+export const skipUserResponse = mutation({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+    mbtiEventId: v.id('mbtiEvents'),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    const event = await ctx.db.get(args.mbtiEventId);
+    if (!experiment || !event || event.experimentId !== experiment._id) {
+      throw new Error('Invalid MBTI user response target.');
+    }
+    const now = Date.now();
+    const existing = await ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_event', (q) =>
+        q.eq('experimentId', args.experimentId).eq('mbtiEventId', args.mbtiEventId),
+      )
+      .first();
+    const payload = {
+      updatedAt: now,
+      selectedOption: '跳过此情境',
+      confidence: 1,
+      emotions: [] as string[],
+      freeText: args.reason?.trim().slice(0, 1200) || '用户选择暂不回应这个情境。',
+      scenarioFit: 'partial' as const,
+      correctionText: args.reason?.trim().slice(0, 1200) || undefined,
+      responseStatus: 'skipped' as const,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, payload);
+    } else {
+      await ctx.db.insert('mbtiUserResponses', {
+        experimentId: args.experimentId,
+        mbtiEventId: args.mbtiEventId,
+        createdAt: now,
+        ...payload,
+      });
+    }
+    if (!['seeded', 'moving', 'conversation_pending'].includes(event.status)) {
+      await ctx.db.patch(args.mbtiEventId, { status: 'skipped' });
+    }
+    await refreshDecisionState(ctx, args.experimentId);
+    return { skipped: true };
+  },
+});
+
+async function refreshDecisionState(ctx: MutationCtx, experimentId: Id<'mbtiExperiments'>) {
+  const [events, responses] = await Promise.all([
+    ctx.db
+      .query('mbtiEvents')
+      .withIndex('experimentId', (q) => q.eq('experimentId', experimentId))
+      .collect(),
+    ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_time', (q) => q.eq('experimentId', experimentId))
+      .collect(),
+  ]);
+  const respondedEventIds = new Set(
+    responses
+      .filter((response) => response.responseStatus === 'responded')
+      .map((response) => String(response.mbtiEventId)),
+  );
+  const respondedVariables = new Set<string>();
+  for (const event of events) {
+    if (respondedEventIds.has(String(event._id)) && event.testedVariable) {
+      respondedVariables.add(event.testedVariable);
+    }
+  }
+  const required = Math.max(1, Math.min(5, events.length || 1));
+  const responded = Math.min(required, respondedEventIds.size);
+  const unresolvedVariables = events
+    .map((event) => event.testedVariable)
+    .filter((variable): variable is string => Boolean(variable && !respondedVariables.has(variable)));
+  const latestCorrection = responses
+    .slice()
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .find((response) => response.correctionText || response.scenarioFit !== 'fits');
+  const decisionState = {
+    updatedAt: Date.now(),
+    resolvedVariables: Array.from(respondedVariables).slice(0, 8),
+    uncertainVariables: Array.from(new Set(unresolvedVariables)).slice(0, 8),
+    confirmedConstraints: inferConfirmedConstraints(responses).slice(0, 8),
+    sensitiveConditions: inferSensitiveConditions(events, responses).slice(0, 8),
+    responseCoverage: {
+      responded,
+      required,
+      missing: Math.max(0, required - responded),
+    },
+    lastUserCorrection: latestCorrection?.correctionText || undefined,
+  };
+  await ctx.db.patch(experimentId, {
+    updatedAt: Date.now(),
+    decisionState,
+  });
+  await maybeCreateAdaptiveProbe(ctx, experimentId, events, responses, decisionState);
+}
+
+async function maybeCreateAdaptiveProbe(
+  ctx: MutationCtx,
+  experimentId: Id<'mbtiExperiments'>,
+  events: Doc<'mbtiEvents'>[],
+  responses: Doc<'mbtiUserResponses'>[],
+  decisionState: NonNullable<Doc<'mbtiExperiments'>['decisionState']>,
+) {
+  const experiment = await ctx.db.get(experimentId);
+  if (!experiment || experiment.status !== 'running') {
+    return;
+  }
+  const latestResponse = responses.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  if (!latestResponse || latestResponse.responseStatus !== 'responded') {
+    return;
+  }
+  const needsCalibration = latestResponse.scenarioFit !== 'fits' || Boolean(latestResponse.correctionText);
+  const targetVariable = needsCalibration
+    ? adaptiveVariableFromResponse(latestResponse, decisionState)
+    : decisionState.uncertainVariables[0];
+  if (!targetVariable) {
+    return;
+  }
+  const hasExistingAdaptive = events.some((event) =>
+    event.testedVariable === targetVariable &&
+    (event.probeOrigin === 'adaptive' || event.probeOrigin === 'calibration') &&
+    !['responded', 'skipped', 'expired_to_stage_report', 'resolved', 'failed'].includes(event.status),
+  );
+  if (hasExistingAdaptive) {
+    return;
+  }
+  const createdAdaptiveCount = events.filter((event) => event.probeOrigin === 'adaptive' || event.probeOrigin === 'calibration').length;
+  if (createdAdaptiveCount >= 3) {
+    return;
+  }
+  const residentParticipation = residentParticipationForProbe(
+    targetVariable,
+    latestResponse.correctionText || latestResponse.freeText,
+    createdAdaptiveCount,
+  );
+  const adaptiveResidents = await adaptiveResidentParticipants(ctx, experiment, createdAdaptiveCount);
+  const adaptiveResidentNames = adaptiveResidents.map((resident) => resident.name);
+  const adaptiveInvolvedRoles = [
+    'self',
+    ...adaptiveResidentNames,
+  ];
+  const now = Date.now();
+  const title = needsCalibration
+    ? `校准探针：${compactForPrompt(targetVariable, 18)}`
+    : `追问探针：${compactForPrompt(targetVariable, 18)}`;
+  const adaptiveReason = needsCalibration
+    ? `用户修正了情境理解：${latestResponse.correctionText || latestResponse.freeText || '情境不完全贴合'}`
+    : `用户已回应部分变量，下一步优先测试仍不确定的“${targetVariable}”。`;
+  const eventId = await ctx.db.insert('mbtiEvents', {
+    experimentId,
+    worldId: experiment.worldId,
+    createdAt: now,
+    tickOffset: 2 + events.length * 2,
+    kind: needsCalibration ? 'evaluation' : 'opportunity',
+    title,
+    description: [
+      `场景：小镇公共地点，居民围绕刚才暴露出的真实约束继续推进一次校准。`,
+      `事件强度：中等`,
+      `具体事情：居民把“${targetVariable}”具体化成一个新的现实条件，请我判断这个条件是否会改变原来的选择。`,
+      `参与者：我${adaptiveResidentNames.length ? `、${adaptiveResidentNames.join('、')}` : '、当前场景居民'}`,
+      `观察维度：${targetVariable}`,
+      `问题关联：根据用户真实回应动态生成，用来验证刚刚确认或修正的解释是否稳定。`,
+      `想获得的信息：${adaptiveReason}`,
+      `可评判信号：用户是否坚持原选择、提出条件边界、改选过渡方案或指出系统仍误解了自己。`,
+    ].join(' '),
+    involvedRoles: adaptiveInvolvedRoles,
+    testedVariable: targetVariable,
+    testedHypotheses: (experiment.questionFocus?.outcomeHypotheses ?? []).map((hypothesis) => hypothesis.label).slice(0, 4),
+    questionLink: '根据用户真实回应动态生成，用来验证当前解释是否稳定。',
+    informationGoal: adaptiveReason,
+    expectedSignals: ['坚持原选择', '提出条件边界', '改选过渡方案', '指出系统误解'],
+    biasDirection: 'balanced',
+    probeOrigin: needsCalibration ? 'calibration' : 'adaptive',
+    adaptiveReason,
+    residentRoles: adaptiveResidentNames.length
+      ? residentParticipation.roles.map((role, index) => `${role}：${adaptiveResidentNames[index % adaptiveResidentNames.length]}`)
+      : residentParticipation.roles,
+    residentParticipationGoal: residentParticipation.goal,
+    status: 'seeded',
+  });
+  await ctx.scheduler.runAfter(MBTI_SCENE_EVENT_MIN_GAP_MS, internal.mbti.triggerSceneEvent, {
+    experimentId,
+    eventId,
+  });
+}
+
+async function adaptiveResidentParticipants(
+  ctx: MutationCtx,
+  experiment: Doc<'mbtiExperiments'>,
+  offset: number,
+): Promise<Array<{ key: string; name: string }>> {
+  if (experiment.townId && experiment.sceneRequestId) {
+    const townId = experiment.townId;
+    const sceneRequest = await ctx.db.get(experiment.sceneRequestId);
+    const selectedKeys = sceneRequest?.selectedResidentKeys ?? [];
+    if (selectedKeys.length > 0) {
+      const residents = await ctx.db
+        .query('mbtiTownResidents')
+        .withIndex('town_status', (q) => q.eq('townId', townId).eq('status', 'active'))
+        .collect();
+      const selectedResidents = selectedKeys
+        .map((key) => residents.find((resident) => resident.key === key))
+        .filter((resident): resident is Doc<'mbtiTownResidents'> => Boolean(resident));
+      if (selectedResidents.length > 0) {
+        return rotateResidents(selectedResidents, offset).slice(0, Math.min(2, selectedResidents.length));
+      }
+    }
+  }
+  const createdResidentRoles = experiment.socialField.createdRoles
+    .filter((role) => role.startsWith('resident:'))
+    .map((role) => role.replace(/^resident:/, ''))
+    .filter(Boolean);
+  return rotateResidents(
+    createdResidentRoles.map((key, index) => ({
+      key,
+      name: `常驻居民${index + 1}`,
+    })),
+    offset,
+  ).slice(0, Math.min(2, createdResidentRoles.length));
+}
+
+function rotateResidents<T>(residents: T[], offset: number) {
+  if (residents.length === 0) {
+    return residents;
+  }
+  return residents.map((_, index) => residents[(index + offset) % residents.length]);
+}
+
+function adaptiveVariableFromResponse(
+  response: Doc<'mbtiUserResponses'>,
+  decisionState: NonNullable<Doc<'mbtiExperiments'>['decisionState']>,
+) {
+  const text = `${response.freeText} ${response.correctionText ?? ''}`;
+  if (/现金|收入|房贷|医保|医疗|钱|预算|缓冲/.test(text)) {
+    return '经济缓冲与现金流底线';
+  }
+  if (/家人|父母|孩子|伴侣|照顾|责任/.test(text)) {
+    return '家庭责任与关系压力';
+  }
+  if (/合同|竞业|签约|法律|资格|身份/.test(text)) {
+    return '合同资格与外部限制';
+  }
+  if (/主导权|自主|控制|被管|决策/.test(text)) {
+    return '自主性与主导权边界';
+  }
+  return decisionState.uncertainVariables[0] ?? decisionState.sensitiveConditions[0] ?? '用户修正后的关键条件';
+}
+
+function inferConfirmedConstraints(responses: Doc<'mbtiUserResponses'>[]) {
+  const text = responses.map((response) => `${response.freeText} ${response.correctionText ?? ''}`).join(' ');
+  const constraints = [];
+  if (/现金|存款|收入|房贷|医保|医疗|钱|预算|缓冲/.test(text)) {
+    constraints.push('现金流或经济缓冲是已确认约束');
+  }
+  if (/家人|父母|孩子|伴侣|照顾|责任/.test(text)) {
+    constraints.push('家庭或关系责任是已确认约束');
+  }
+  if (/合同|竞业|签约|法律|资格|身份/.test(text)) {
+    constraints.push('合同、资格或身份条件是已确认约束');
+  }
+  if (/主导权|自主|控制|被管|决策/.test(text)) {
+    constraints.push('自主性或主导权是已确认高敏感条件');
+  }
+  return constraints;
+}
+
+function inferSensitiveConditions(events: Doc<'mbtiEvents'>[], responses: Doc<'mbtiUserResponses'>[]) {
+  const responseText = responses.map((response) => `${response.selectedOption} ${response.freeText} ${response.correctionText ?? ''}`).join(' ');
+  const eventText = events.map((event) => `${event.testedVariable ?? ''} ${event.informationGoal ?? ''}`).join(' ');
+  const text = `${responseText} ${eventText}`;
+  const conditions = [];
+  if (/风险|稳定|收入|现金|钱/.test(text)) {
+    conditions.push('经济风险');
+  }
+  if (/家人|伴侣|关系|评价|反对/.test(text)) {
+    conditions.push('关系压力');
+  }
+  if (/自主|主导|控制|意义|成长/.test(text)) {
+    conditions.push('自主与意义');
+  }
+  if (/时间|长期|未来|后果|执行/.test(text)) {
+    conditions.push('长期执行代价');
+  }
+  return conditions;
+}
 
 export const finalizeExperiment = internalAction({
   args: {
@@ -1534,6 +1984,10 @@ export const collectExperimentEvidence = internalQuery({
       .query('mbtiEventEvidence')
       .withIndex('world_time', (q) => q.eq('worldId', experiment.worldId))
       .take(160);
+    const userResponses = await ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_time', (q) => q.eq('experimentId', experiment._id))
+      .collect();
     const behaviorEvents = await ctx.db
       .query('mbtiBehaviorEvents')
       .withIndex('world_time', (q) => q.eq('worldId', experiment.worldId))
@@ -1559,6 +2013,7 @@ export const collectExperimentEvidence = internalQuery({
       socialEvents,
       events,
       eventEvidence,
+      userResponses,
       behaviorEvents,
       playerDescriptions,
       memories,
@@ -1582,6 +2037,16 @@ export const completeExperiment = internalMutation({
         why: v.string(),
         signals: v.array(v.string()),
       }))),
+      evidenceLevel: v.optional(v.union(
+        v.literal('level_0'),
+        v.literal('level_1'),
+        v.literal('level_2'),
+        v.literal('level_3'),
+      )),
+      realUserResponseCount: v.optional(v.number()),
+      requiredUserResponseCount: v.optional(v.number()),
+      missingUserResponseCount: v.optional(v.number()),
+      confidenceNotice: v.optional(v.string()),
       limits: v.string(),
     }),
   },
@@ -1621,9 +2086,21 @@ export const completeExperiment = internalMutation({
         .map((event) => event.mbtiEventId)
         .filter((eventId): eventId is Id<'mbtiEvents'> => !!eventId),
     );
+    const userResponses = await ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_time', (q) => q.eq('experimentId', experiment._id))
+      .collect();
+    const responseByEventId = new Map(userResponses.map((response) => [String(response.mbtiEventId), response]));
     for (const event of events) {
       if (eventIdsWithRecords.has(event._id)) {
-        await ctx.db.patch(event._id, { status: 'resolved' });
+        const response = responseByEventId.get(String(event._id));
+        if (response?.responseStatus === 'responded') {
+          await ctx.db.patch(event._id, { status: 'responded' });
+        } else if (response?.responseStatus === 'skipped') {
+          await ctx.db.patch(event._id, { status: 'skipped' });
+        } else {
+          await ctx.db.patch(event._id, { status: 'expired_to_stage_report' });
+        }
       }
     }
     await consolidateResidentTownMemory(ctx, experiment);
@@ -1801,8 +2278,18 @@ export const deleteExperiment = mutation({
     if (!experiment) {
       return { deleted: false };
     }
-    await cleanupExperiment(ctx, experiment);
-    return { deleted: true };
+    const cleanup = await stopExperimentRuntime(ctx, experiment);
+    await ctx.db.patch(experiment._id, {
+      status: 'failed',
+      completedAt: experiment.completedAt ?? Date.now(),
+      updatedAt: Date.now(),
+    });
+    await ctx.scheduler.runAfter(
+      cleanup.deferred ? MBTI_RUNTIME_DELETE_GRACE_MS : 0,
+      internal.mbti.continueDeleteExperiment,
+      { experimentId: experiment._id },
+    );
+    return { deleted: true, deferred: true };
   },
 });
 
@@ -1811,7 +2298,17 @@ export const clearAllExperiments = mutation({
   handler: async (ctx) => {
     const experiments = await ctx.db.query('mbtiExperiments').collect();
     for (const experiment of experiments) {
-      await cleanupExperiment(ctx, experiment);
+      const cleanup = await stopExperimentRuntime(ctx, experiment);
+      await ctx.db.patch(experiment._id, {
+        status: 'failed',
+        completedAt: experiment.completedAt ?? Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.scheduler.runAfter(
+        cleanup.deferred ? MBTI_RUNTIME_DELETE_GRACE_MS : 0,
+        internal.mbti.continueDeleteExperiment,
+        { experimentId: experiment._id },
+      );
     }
     return { deleted: experiments.length };
   },
@@ -1875,28 +2372,35 @@ export const cleanupStaleMbtiExperiments = internalMutation({
   },
 });
 
-async function cleanupExperiment(ctx: MutationCtx, experiment: Doc<'mbtiExperiments'>) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    const currentExperiment = await ctx.db.get(experiment._id);
-    if (!currentExperiment) {
-      return;
+export const continueDeleteExperiment = internalMutation({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    if (!experiment) {
+      return { done: true };
     }
-    const result = await deleteExperimentRuntime(ctx, currentExperiment);
-    if (result.done) {
-      break;
+    const runtime = await deleteExperimentRuntime(ctx, experiment);
+    if (runtime.done) {
+      const deleted =
+        (await deleteExperimentIndexedBatch(ctx, 'mbtiEvents', 'experimentId', experiment._id)) +
+        (await deleteExperimentIndexedBatch(ctx, 'mbtiUserResponses', 'experiment_time', experiment._id)) +
+        (await deleteWorldIndexedBatch(ctx, 'mbtiEventEvidence', 'world_time', experiment.worldId)) +
+        (await deleteWorldIndexedBatch(ctx, 'mbtiBehaviorEvents', 'world_time', experiment.worldId));
+      if (deleted === 0) {
+        await ctx.db.delete(experiment._id);
+        return { done: true };
+      }
     }
-  }
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    const deleted =
-      (await deleteWorldIndexedBatch(ctx, 'mbtiEvents', 'worldId', experiment.worldId)) +
-      (await deleteWorldIndexedBatch(ctx, 'mbtiEventEvidence', 'world_time', experiment.worldId)) +
-      (await deleteWorldIndexedBatch(ctx, 'mbtiBehaviorEvents', 'world_time', experiment.worldId));
-    if (deleted === 0) {
-      break;
-    }
-  }
-  await ctx.db.delete(experiment._id);
-}
+    await ctx.scheduler.runAfter(
+      runtime.deferred ? MBTI_RUNTIME_DELETE_GRACE_MS : 1000,
+      internal.mbti.continueDeleteExperiment,
+      { experimentId: experiment._id },
+    );
+    return { done: false };
+  },
+});
 
 async function archiveExperimentRuntime(
   ctx: MutationCtx,
@@ -1957,6 +2461,7 @@ async function buildRuntimeArchiveReport(
     archivedConversations,
     events,
     eventEvidence,
+    userResponses,
     innerThoughts,
     socialEvents,
     behaviorEvents,
@@ -1977,6 +2482,10 @@ async function buildRuntimeArchiveReport(
       .query('mbtiEventEvidence')
       .withIndex('world_time', (q) => q.eq('worldId', experiment.worldId))
       .take(160),
+    ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_time', (q) => q.eq('experimentId', experiment._id))
+      .collect(),
     ctx.db
       .query('innerThoughts')
       .filter((q) => q.eq(q.field('worldId'), experiment.worldId))
@@ -2006,6 +2515,7 @@ async function buildRuntimeArchiveReport(
     archivedConversations,
     events,
     eventEvidence,
+    userResponses,
     innerThoughts,
     socialEvents,
     behaviorEvents,
@@ -2022,7 +2532,7 @@ async function buildRuntimeArchiveReport(
   };
 }
 
-async function deleteExperimentRuntime(ctx: MutationCtx, experiment: Doc<'mbtiExperiments'>) {
+async function stopExperimentRuntime(ctx: MutationCtx, experiment: Doc<'mbtiExperiments'>) {
   const now = Date.now();
   const worldId = experiment.worldId;
   const engine = await ctx.db.get(experiment.engineId);
@@ -2033,22 +2543,6 @@ async function deleteExperimentRuntime(ctx: MutationCtx, experiment: Doc<'mbtiEx
   const runtimeStillActive =
     engine?.running === true ||
     worldStatus?.status === 'running';
-
-  if (runtimeStillActive) {
-    if (engine?.running) {
-      await ctx.db.patch(experiment.engineId, {
-        running: false,
-        generationNumber: engine.generationNumber + 1,
-      });
-    }
-    if (worldStatus) {
-      await ctx.db.patch(worldStatus._id, {
-        status: 'stoppedByDeveloper',
-        lastViewed: now,
-      });
-    }
-    return { done: false, deferred: true };
-  }
 
   if (engine?.running) {
     await ctx.db.patch(experiment.engineId, {
@@ -2062,8 +2556,22 @@ async function deleteExperimentRuntime(ctx: MutationCtx, experiment: Doc<'mbtiEx
       lastViewed: now,
     });
   }
+  return { deferred: runtimeStillActive };
+}
+
+async function deleteExperimentRuntime(ctx: MutationCtx, experiment: Doc<'mbtiExperiments'>) {
+  const worldId = experiment.worldId;
+  const stopped = await stopExperimentRuntime(ctx, experiment);
+  if (stopped.deferred) {
+    return { done: false, deferred: true };
+  }
+
   const world = await ctx.db.get(worldId);
   const playerIds = world?.players.map((player) => player.id) ?? [];
+  const worldStatus = await ctx.db
+    .query('worldStatus')
+    .withIndex('worldId', (q) => q.eq('worldId', worldId))
+    .first();
 
     let deleted = 0;
     if (experiment.mapId) {
@@ -2085,7 +2593,7 @@ async function deleteExperimentRuntime(ctx: MutationCtx, experiment: Doc<'mbtiEx
       const memories = await ctx.db
         .query('memories')
         .withIndex('playerId', (q) => q.eq('playerId', playerId))
-        .take(100);
+        .take(MBTI_DELETE_BATCH_SIZE);
       for (const memory of memories) {
         if (await ctx.db.get(memory.embeddingId)) {
           await ctx.db.delete(memory.embeddingId);
@@ -2096,7 +2604,7 @@ async function deleteExperimentRuntime(ctx: MutationCtx, experiment: Doc<'mbtiEx
     const inputs = await ctx.db
       .query('inputs')
       .withIndex('byInputNumber', (q) => q.eq('engineId', experiment.engineId))
-      .take(100);
+      .take(MBTI_DELETE_BATCH_SIZE);
     for (const input of inputs) {
       await ctx.db.delete(input._id);
     }
@@ -2120,7 +2628,22 @@ async function deleteWorldIndexedBatch(
 ) {
   const docs = await (ctx.db.query(tableName as any) as any)
     .withIndex(indexName, (q: any) => q.eq('worldId', worldId))
-    .take(100);
+    .take(MBTI_DELETE_BATCH_SIZE);
+  for (const doc of docs) {
+    await ctx.db.delete(doc._id);
+  }
+  return docs.length;
+}
+
+async function deleteExperimentIndexedBatch(
+  ctx: MutationCtx,
+  tableName: string,
+  indexName: string,
+  experimentId: Id<'mbtiExperiments'>,
+) {
+  const docs = await (ctx.db.query(tableName as any) as any)
+    .withIndex(indexName, (q: any) => q.eq('experimentId', experimentId))
+    .take(MBTI_DELETE_BATCH_SIZE);
   for (const doc of docs) {
     await ctx.db.delete(doc._id);
   }
@@ -2300,6 +2823,7 @@ function buildDeterministicReport(evidence: {
   archivedConversations: Doc<'archivedConversations'>[];
   events: Doc<'mbtiEvents'>[];
   eventEvidence: Doc<'mbtiEventEvidence'>[];
+  userResponses: Doc<'mbtiUserResponses'>[];
   innerThoughts: Doc<'innerThoughts'>[];
   socialEvents: Doc<'socialEvents'>[];
   behaviorEvents: Doc<'mbtiBehaviorEvents'>[];
@@ -2307,6 +2831,7 @@ function buildDeterministicReport(evidence: {
 }): MbtiReport {
   const dayCount = Math.max(1, evidence.archivedConversations.length);
   const behaviors = evidence.experiment.profile.behaviors;
+  const credibility = reportCredibility(evidence.events, evidence.userResponses);
   const evidenceLines = [
     `模拟经过 ${dayCount} 天：每结束一段对话按一天计。`,
     `收集聊天 ${evidence.messages.length} 条，结束对话 ${evidence.archivedConversations.length} 段。`,
@@ -2314,6 +2839,7 @@ function buildDeterministicReport(evidence: {
     `用户行为 ${evidence.behaviorEvents.length} 条。`,
     `事件记录 ${evidence.socialEvents.length} 条。`,
     `主线事件 ${evidence.events.length} 个，绑定证据 ${evidence.eventEvidence.length} 条。`,
+    `真实用户关键回应 ${credibility.realUserResponseCount}/${credibility.requiredUserResponseCount} 个。`,
   ];
   if (evidence.experiment.questionFocus) {
     evidenceLines.push(
@@ -2341,7 +2867,49 @@ function buildDeterministicReport(evidence: {
     evidence: evidenceLines,
     conclusion,
     answerOptions,
-    limits: '这是一次小样本演化，结论只用于判断人格倾向是否有迹可循，不代表现实必然结果。',
+    evidenceLevel: credibility.evidenceLevel,
+    realUserResponseCount: credibility.realUserResponseCount,
+    requiredUserResponseCount: credibility.requiredUserResponseCount,
+    missingUserResponseCount: credibility.missingUserResponseCount,
+    confidenceNotice: credibility.confidenceNotice,
+    limits: `${credibility.confidenceNotice} 这是一次小样本演化，结论只用于判断人格倾向是否有迹可循，不代表现实必然结果。`,
+  };
+}
+
+function reportCredibility(
+  events: Doc<'mbtiEvents'>[],
+  userResponses: Doc<'mbtiUserResponses'>[],
+) {
+  const requiredUserResponseCount = Math.max(1, Math.min(5, events.length || 1));
+  const respondedEventIds = new Set(
+    userResponses
+      .filter((response) => response.responseStatus === 'responded')
+      .map((response) => String(response.mbtiEventId)),
+  );
+  const realUserResponseCount = Math.min(requiredUserResponseCount, respondedEventIds.size);
+  const missingUserResponseCount = Math.max(0, requiredUserResponseCount - realUserResponseCount);
+  const evidenceLevel: NonNullable<MbtiReport['evidenceLevel']> =
+    realUserResponseCount === 0
+      ? 'level_0'
+      : realUserResponseCount < 3
+      ? 'level_1'
+      : missingUserResponseCount > 0
+      ? 'level_2'
+      : 'level_3';
+  const confidenceNotice =
+    evidenceLevel === 'level_3'
+      ? '关键回应覆盖较完整，当前结论可以作为较稳健的条件化参考。'
+      : evidenceLevel === 'level_2'
+      ? `已完成部分关键回应，但仍缺 ${missingUserResponseCount} 个关键回应；当前结论是阶段性参考。`
+      : evidenceLevel === 'level_1'
+      ? `真实用户回应较少，仍缺 ${missingUserResponseCount} 个关键回应；当前结论可能不够准确，仅供参考。`
+      : '尚未采集到真实用户关键回应；当前只能基于问题、MBTI 先验和小镇模拟证据给出低可信参考。';
+  return {
+    evidenceLevel,
+    realUserResponseCount,
+    requiredUserResponseCount,
+    missingUserResponseCount,
+    confidenceNotice,
   };
 }
 
@@ -2351,6 +2919,7 @@ function buildAnswerOptions(evidence: {
   innerThoughts: Doc<'innerThoughts'>[];
   socialEvents: Doc<'socialEvents'>[];
   eventEvidence: Doc<'mbtiEventEvidence'>[];
+  userResponses?: Doc<'mbtiUserResponses'>[];
   behaviorEvents: Doc<'mbtiBehaviorEvents'>[];
   memories: Doc<'memories'>[];
 }, tendency: string): NonNullable<MbtiReport['answerOptions']> {
@@ -2361,6 +2930,7 @@ function buildAnswerOptions(evidence: {
     evidence.memories.length +
     evidence.socialEvents.length +
     evidence.eventEvidence.length +
+    (evidence.userResponses?.filter((response) => response.responseStatus === 'responded').length ?? 0) * 3 +
     evidence.behaviorEvents.length;
   const questionContext = [
     evidence.experiment.question,
@@ -2657,6 +3227,7 @@ function buildReportPrompt(
     archivedConversations: Doc<'archivedConversations'>[];
     events: Doc<'mbtiEvents'>[];
     eventEvidence: Doc<'mbtiEventEvidence'>[];
+    userResponses: Doc<'mbtiUserResponses'>[];
     innerThoughts: Doc<'innerThoughts'>[];
     behaviorEvents: Doc<'mbtiBehaviorEvents'>[];
     memories: Doc<'memories'>[];
@@ -2675,6 +3246,7 @@ function buildReportPrompt(
     .slice(-12)
     .map((event) => `- ${event.label}：${event.description}`)
     .join('\n');
+  const userResponseLines = buildUserResponseReportLines(evidence.events, evidence.userResponses);
   const eventLines = buildEventEvidenceReportLines(evidence.events, evidence.eventEvidence);
   const memoryLines = evidence.memories
     .slice(-8)
@@ -2697,13 +3269,51 @@ function buildReportPrompt(
     `问题：${evidence.experiment.question}`,
     `本轮问题驱动蓝图：\n${focusLines}`,
     `基础判断：${fallback.conclusion}`,
+    `报告可信等级：${fallback.evidenceLevel ?? 'level_0'}；真实用户关键回应 ${fallback.realUserResponseCount ?? 0}/${fallback.requiredUserResponseCount ?? 0}。`,
+    `可信度提示：${fallback.confidenceNotice ?? fallback.limits}`,
+    `真实用户关键回应，优先于 AI 生成的“我”的台词：\n${userResponseLines || '暂无真实用户关键回应'}`,
     `按事件归属的实际证据：\n${eventLines || '暂无事件证据'}`,
     `兜底最近聊天，仅在事件证据不足时参考，不能替代事件证据：\n${messageLines || '暂无'}`,
     `用户行为证据：\n${behaviorLines || '暂无'}`,
     `内心独白：\n${thoughtLines || '暂无'}`,
     `记忆：\n${memoryLines || '暂无'}`,
-    `请用 4-6 句话回答：行为倾向是否符合用户人格、哪些事件证据支持、哪些事件缺证据、结论边界是什么。`,
+    `请用 4-6 句话回答：行为倾向是否符合用户人格、哪些真实用户回应支持、哪些事件缺证据、结论边界是什么。必须明确说明用户回应不足时结论仅供参考。`,
   ].join('\n\n');
+}
+
+function buildUserResponseReportLines(
+  events: Doc<'mbtiEvents'>[],
+  userResponses: Doc<'mbtiUserResponses'>[],
+) {
+  const eventById = new Map(events.map((event) => [String(event._id), event]));
+  return userResponses
+    .slice()
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .slice(-12)
+    .map((response) => {
+      const event = eventById.get(String(response.mbtiEventId));
+      const correction = response.correctionText ? `；修正：${response.correctionText}` : '';
+      const statusText = response.responseStatus === 'responded'
+        ? '真实回应'
+        : response.responseStatus === 'skipped'
+        ? '用户跳过'
+        : '阶段报告过期';
+      return [
+        `- ${event?.title ?? '未知事件'}（${statusText}）：选择「${response.selectedOption}」，确定度 ${response.confidence}/7，情绪 ${response.emotions.join('、') || '未填'}`,
+        `  说明：${response.freeText || '未填写'}；情境贴合度：${scenarioFitLabel(response.scenarioFit)}${correction}`,
+      ].join('\n');
+    })
+    .join('\n');
+}
+
+function scenarioFitLabel(fit: Doc<'mbtiUserResponses'>['scenarioFit']) {
+  if (fit === 'fits') {
+    return '贴合';
+  }
+  if (fit === 'partial') {
+    return '部分贴合';
+  }
+  return '不贴合';
 }
 
 function buildEventEvidenceReportLines(
@@ -2730,11 +3340,24 @@ function buildEventEvidenceReportLines(
       const participants = event.involvedRoles.map(displayParticipantName).join('、') || '未指定';
       return [
         `- ${event.title}（${eventStatusLabelForReport(event.status)}，参与：${participants}）`,
+        `探针：${event.testedVariable ?? '未标注'}；来源：${probeOriginLabelForReport(event.probeOrigin)}；居民角色：${event.residentRoles?.join('、') || '未标注'}`,
+        event.adaptiveReason ? `动态原因：${event.adaptiveReason}` : '',
+        event.residentParticipationGoal ? `居民参与目标：${event.residentParticipationGoal}` : '',
         `计划：${compactForPrompt(event.description, 160)}`,
         `证据：${details || '暂无绑定证据'}`,
-      ].join('\n  ');
+      ].filter(Boolean).join('\n  ');
     })
     .join('\n');
+}
+
+function probeOriginLabelForReport(origin: Doc<'mbtiEvents'>['probeOrigin']) {
+  if (origin === 'adaptive') {
+    return '动态探针';
+  }
+  if (origin === 'calibration') {
+    return '校准探针';
+  }
+  return '初始探针';
 }
 
 function evidenceKindLabel(kind: Doc<'mbtiEventEvidence'>['kind']) {
@@ -2756,7 +3379,11 @@ function eventStatusLabelForReport(status: Doc<'mbtiEvents'>['status']) {
     moving: '正在进入现场',
     conversation_pending: '等待相关对话',
     triggered: '已触发',
+    pending_user_response: '待用户回应',
     observed: '已有证据',
+    responded: '已记录真实回应',
+    skipped: '用户已跳过',
+    expired_to_stage_report: '未回应，进入阶段报告',
     resolved: '已完成',
     failed: '触发失败',
   };
@@ -2935,12 +3562,10 @@ function buildSeededEvents(
   targetEventCount: number,
   focus?: QuestionFocusInput,
 ) {
-  const primary = roles[0]?.label.trim() ?? '';
   const participantScope = buildEventParticipantScope(roles, residents);
-  const primaryDisplayName = primary || '现场情况';
   const concretePlans = focus?.eventPlans?.filter((plan) => plan.title && plan.trigger);
   if (concretePlans && concretePlans.length > 0) {
-    return expandPlannedEvents(concretePlans, targetEventCount).map(({ plan, round }, index) => {
+    return concretePlans.slice(0, targetEventCount).map((plan, index) => {
       const participantPlan = normalizeEventParticipantPlan(plan.participants, participantScope, index);
       const involvedRoles = participantPlan.involvedRoles;
       const sanitizedTitle = sanitizeEventPlanText(plan.title, participantPlan, index);
@@ -2954,92 +3579,85 @@ function buildSeededEvents(
         plan.observationAxis ?? focus?.analysisDimensions?.[index % Math.max(1, focus.analysisDimensions.length)] ?? '',
         index,
         participantPlan,
-        round,
       );
+      const testedVariable =
+        plan.observationAxis ?? focus?.analysisDimensions?.[index % Math.max(1, focus.analysisDimensions.length)] ?? '压力下的真实反应';
+      const expectedSignals = [
+        plan.judgmentSignal,
+        ...(focus?.outcomeHypotheses ?? [])
+          .flatMap((hypothesis) => hypothesis.supportSignals.slice(0, 1))
+          .slice(0, 3),
+      ].filter(Boolean);
+      if (!plan.responseOptions || plan.responseOptions.length < 3) {
+        throw new Error(`动态情境探针“${plan.title}”缺少合格的用户选项。`);
+      }
+      const residentParticipation = residentParticipationForProbe(testedVariable, plan.informationGoal, index);
       return {
         tickOffset: 2 + index * 2,
         kind: eventKindForIndex(index),
-        title: diversifyEventTitle(sanitizedTitle, index, round),
+        title: stripInternalEventPrefix(sanitizedTitle),
         description: [
           `场景：${sanitizedScene}`,
           `事件强度：${normalizeEventSeverityLabel(plan.severity, index)}`,
           `具体事情：${sanitizedTrigger}`,
           `参与者：${involvedRoles.map(displayParticipantName).join('、')}`,
-          `观察维度：${plan.observationAxis ?? focus?.analysisDimensions?.[index % Math.max(1, focus.analysisDimensions.length)] ?? '压力下的真实反应'}`,
+          `观察维度：${testedVariable}`,
           `问题关联：${plan.questionLink ?? '把用户问题里的抽象担忧转成一次可观察的生活选择'}`,
           `想获得的信息：${plan.informationGoal}`,
           `可评判信号：${plan.judgmentSignal}`,
+          `用户选项：${plan.responseOptions.join(' / ')}`,
         ].join(' '),
         involvedRoles,
+        testedVariable,
+        testedHypotheses: (focus?.outcomeHypotheses ?? []).map((hypothesis) => hypothesis.label).slice(0, 4),
+        questionLink: plan.questionLink ?? '把用户问题里的抽象担忧转成一次可观察的生活选择',
+        informationGoal: plan.informationGoal,
+        expectedSignals,
+        responseOptions: plan.responseOptions,
+        biasDirection: 'balanced' as const,
+        probeOrigin: 'initial' as const,
+        residentRoles: residentParticipation.roles,
+        residentParticipationGoal: residentParticipation.goal,
       };
     });
   }
-  const friendRole = roles.find((role) => role.enabled && role.role === 'friend');
-  const misunderstandingParticipants = friendRole
-    ? ['self', friendRole.label]
-    : primary
-      ? ['self', primary]
-      : ['self'];
-  const misunderstandingDescription = friendRole
-    ? `${friendRole.label} 给出建议，这个建议可能缓解焦虑，也可能放大误解；重点观察“${focus?.evidenceTargets?.[1] ?? '是否核实真实情况'}”。`
-    : primary
-      ? `${primary} 和我对同一件小事的理解不一致，重点观察“${focus?.evidenceTargets?.[1] ?? '是否核实真实情况'}”。`
-      : `我对现场发生的小事产生不确定感，重点观察“${focus?.evidenceTargets?.[1] ?? '是否核实真实情况'}”。`;
-  const beats = focus?.eventBeats ?? [];
-  const drivingTension = focus?.drivingTension ?? '关系里的不确定感开始进入压力状态。';
-  const evidenceTargets = focus?.evidenceTargets ?? [];
-  const variants = [
-    {
-      tickOffset: 2,
-      kind: 'pressure' as const,
-      title: beats[0] ?? '回应延迟',
-      description: `${primaryDisplayName} 在关键节点没有按预期推进，触发压力：${drivingTension}`,
-      involvedRoles: normalizeEventParticipants([primary], participantScope, 0),
-    },
-    {
-      tickOffset: 4,
-      kind: 'evaluation' as const,
-      title: '外部评价',
-      description: `小镇里的旁观评价把事情推向“${evidenceTargets[0] ?? '事实和感受是否一致'}”这个证据方向，${primaryDisplayName} 的处理方式也可能因此改变。`,
-      involvedRoles: normalizeEventParticipants([primary], participantScope, 1),
-    },
-    {
-      tickOffset: 6,
-      kind: 'misunderstanding' as const,
-      title: beats[1] ?? '信息误读',
-      description: misunderstandingDescription,
-      involvedRoles: normalizeEventParticipants(misunderstandingParticipants, participantScope, 2),
-    },
-    {
-      tickOffset: 8,
-      kind: 'opportunity' as const,
-      title: beats[2] ?? '修复窗口',
-      description: `环境压力暂时减弱，出现一次用于观察“${focus?.observationGoal ?? '追问、等待、转移注意或表达边界'}”的沟通窗口。`,
-      involvedRoles: normalizeEventParticipants([primary], participantScope, 3),
-    },
-  ];
-  return expandVariantEvents(variants, targetEventCount);
+  throw new Error('缺少合格的动态情境探针事件计划；本轮不会使用默认事件。');
 }
 
-function expandPlannedEvents<T extends { title: string }>(plans: T[], targetEventCount: number) {
-  const count = Math.max(1, targetEventCount);
-  return Array.from({ length: count }, (_, index) => ({
-    plan: plans[index % plans.length],
-    round: Math.floor(index / plans.length) + 1,
-  }));
+function optionalAdaptiveReason(event: object): { adaptiveReason?: string } {
+  if ('adaptiveReason' in event && typeof event.adaptiveReason === 'string') {
+    return { adaptiveReason: event.adaptiveReason };
+  }
+  return {};
 }
 
-function expandVariantEvents<T extends { title: string; tickOffset: number }>(events: T[], targetEventCount: number) {
-  const count = Math.max(1, targetEventCount);
-  return Array.from({ length: count }, (_, index) => {
-    const base = events[index % events.length];
-    const round = Math.floor(index / events.length) + 1;
+function residentParticipationForProbe(testedVariable: string, informationGoal: string, index: number) {
+  const text = `${testedVariable} ${informationGoal}`;
+  if (/钱|收入|成本|风险|稳定|现金|合同|时间|资源|工作|辞职|创业/.test(text)) {
     return {
-      ...base,
-      tickOffset: 2 + index * 2,
-      title: round > 1 ? `${base.title} ${round}` : base.title,
+      roles: ['现实约束者', '替代方案提供者'],
+      goal: '让居民把钱、时间、资源或合同约束具体化，测试用户是否仍坚持原选择，或是否需要过渡方案。',
     };
-  });
+  }
+  if (/家人|伴侣|对象|关系|亲密|沟通|修复|边界|误解|评价/.test(text)) {
+    return {
+      roles: ['关系压力者', '支持者'],
+      goal: '让居民提供支持或反对的关系压力，测试用户会靠近沟通、表达边界还是退开。',
+    };
+  }
+  if (/长期|未来|后果|身份|意义|成长|主导|自主/.test(text)) {
+    return {
+      roles: ['未来后果见证者', '理想主义者'],
+      goal: '让居民呈现选择的长期意义和延迟代价，测试用户是否仍认同这个方向。',
+    };
+  }
+  const fallbackRoles = index % 2 === 0
+    ? ['反对者', '替代方案提供者']
+    : ['支持者', '现实约束者'];
+  return {
+    roles: fallbackRoles,
+    goal: '让居民提供不同立场和现实约束，测试用户对当前探针的真实反应。',
+  };
 }
 
 function eventKindForIndex(index: number) {
@@ -3060,25 +3678,8 @@ function normalizeEventSeverityLabel(severity: string | undefined, index: number
   return index % 6 === 4 ? '重大' : index % 3 === 1 ? '中等' : '日常';
 }
 
-function diversifyEventTitle(title: string, index: number, round: number) {
-  if (round <= 1) {
-    return title;
-  }
-  const variants = [
-    '取货单不一致',
-    '公告时间变更',
-    '预约名额冲突',
-    '记录编号缺页',
-    '钥匙临时借走',
-    '付款码失效',
-    '座位被临时占用',
-    '通知口径不一',
-    '登记表被退回',
-    '备用方案被质疑',
-    '承诺时间改口',
-    '现场规则临时变更',
-  ];
-  return variants[index % variants.length];
+function stripInternalEventPrefix(title: string) {
+  return title.replace(/^(日常|中等|重大|轻微|严重)\s*[：:]\s*/, '').trim() || title;
 }
 
 type EventParticipantScope = {
@@ -3104,14 +3705,6 @@ function buildEventParticipantScope(roles: RoleSeed[], residents: TownResidentIn
     allowedNames: new Set(['self', '我', ...fallbackNames]),
     fallbackNames,
   };
-}
-
-function normalizeEventParticipants(
-  participants: string[],
-  scope: EventParticipantScope,
-  index: number,
-) {
-  return normalizeEventParticipantPlan(participants, scope, index).involvedRoles;
 }
 
 function normalizeEventParticipantPlan(
@@ -3203,7 +3796,7 @@ function concretizeEventTrigger(
   const trimmed = trigger.trim();
   const vague =
     round > 1 ||
-    trimmed.length < 34 ||
+    trimmed.length < 24 ||
     /暂时缺货|无法立即完成交易|还在处理|不确定何时能好|工具故障|无法使用|需要寻找替代方案|等待维修|事务的进展|某项事务|特定材料/.test(trimmed);
   if (!vague) {
     return trimmed;

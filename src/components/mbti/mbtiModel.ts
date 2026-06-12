@@ -11,7 +11,7 @@ import {
   TestAnswer,
 } from './types';
 
-export const defaultAnswers: TestAnswer[] = [
+export const quickMbtiAnswers: TestAnswer[] = [
   {
     axis: 'ei',
     prompt: '周末聚会后，朋友一句话让我有点不舒服',
@@ -78,6 +78,204 @@ export const defaultAnswers: TestAnswer[] = [
   },
 ];
 
+export const fullMbtiAnswers: TestAnswer[] = [
+  ...quickMbtiAnswers,
+  {
+    axis: 'ei',
+    prompt: '压力很大时，我更想找人把事情说出来',
+    example: '比如当天遇到烦心事，我会想找熟人复盘一下，而不是独自憋着。',
+    leftLabel: '说出来整理',
+    rightLabel: '自己先消化',
+    value: 55,
+  },
+  {
+    axis: 'ei',
+    prompt: '进入陌生场合时，我通常会主动打开话题',
+    example: '比如饭局、活动或新团队里，我会先观察还是先找人寒暄。',
+    leftLabel: '主动打开',
+    rightLabel: '先观察',
+    value: 50,
+  },
+  {
+    axis: 'ei',
+    prompt: '做重大决定前，我需要和别人讨论才安心',
+    example: '比如换城市、换工作、进入关系前，我会希望有人一起分析。',
+    leftLabel: '讨论后安心',
+    rightLabel: '独立判断',
+    value: 54,
+  },
+  {
+    axis: 'ei',
+    prompt: '情绪低落时，社交会让我恢复一些能量',
+    example: '比如和朋友吃饭、散步或聊天后，我会变轻松还是更累。',
+    leftLabel: '社交回血',
+    rightLabel: '独处回血',
+    value: 48,
+  },
+  {
+    axis: 'ei',
+    prompt: '被误解时，我倾向于立刻解释',
+    example: '比如对方明显会错意，我会马上澄清，还是先退一步等时机。',
+    leftLabel: '立刻解释',
+    rightLabel: '暂时收住',
+    value: 56,
+  },
+  {
+    axis: 'ei',
+    prompt: '我更容易在互动中确认自己的想法',
+    example: '有些想法只有聊出来才清楚，或者独自想才更清楚。',
+    leftLabel: '边聊边想',
+    rightLabel: '独自成形',
+    value: 52,
+  },
+  {
+    axis: 'sn',
+    prompt: '面对新认识的人，我更看重已经发生的事实',
+    example: '比如他说过什么、做过什么，比我对关系走向的感觉更重要。',
+    leftLabel: '看已发生事实',
+    rightLabel: '看潜在可能',
+    value: 46,
+  },
+  {
+    axis: 'sn',
+    prompt: '信息不完整时，我容易根据细节联想到整体趋势',
+    example: '比如一个语气变化，会让我推测对方态度或关系变化。',
+    leftLabel: '先补事实',
+    rightLabel: '联想趋势',
+    value: 62,
+  },
+  {
+    axis: 'sn',
+    prompt: '做选择时，我更信具体经验而不是抽象判断',
+    example: '比如别人讲道理时，我仍会问有没有实际例子或过去证据。',
+    leftLabel: '具体经验',
+    rightLabel: '抽象判断',
+    value: 45,
+  },
+  {
+    axis: 'sn',
+    prompt: '我会自然注意到话里没说出来的东西',
+    example: '比如沉默、停顿、顺序和用词，会让我感觉背后还有别的意思。',
+    leftLabel: '只看明说',
+    rightLabel: '看未说出口',
+    value: 66,
+  },
+  {
+    axis: 'sn',
+    prompt: '计划受阻时，我会先确认现实限制',
+    example: '比如时间、钱、地点、身体状态等现实条件是否允许继续。',
+    leftLabel: '确认限制',
+    rightLabel: '寻找意义',
+    value: 50,
+  },
+  {
+    axis: 'sn',
+    prompt: '我更容易被“未来可能怎样”影响情绪',
+    example: '比如事情还没发生，但想到某种结果就已经紧张或期待。',
+    leftLabel: '少想未来',
+    rightLabel: '预演未来',
+    value: 60,
+  },
+  {
+    axis: 'tf',
+    prompt: '冲突里，我会先判断谁的责任更清楚',
+    example: '比如吵架、合作失败或承诺落空时，我先看责任边界还是情绪伤害。',
+    leftLabel: '责任边界',
+    rightLabel: '情绪伤害',
+    value: 48,
+  },
+  {
+    axis: 'tf',
+    prompt: '别人难过时，我会先安抚，而不是先分析',
+    example: '哪怕我知道解决方案，也会先让对方感觉被理解。',
+    leftLabel: '先给方案',
+    rightLabel: '先安抚',
+    value: 64,
+  },
+  {
+    axis: 'tf',
+    prompt: '做重要选择时，我更怕亏欠人情',
+    example: '比如拒绝别人、改变承诺或照顾自己时，会不会先想到对方感受。',
+    leftLabel: '看原则代价',
+    rightLabel: '怕亏欠感受',
+    value: 58,
+  },
+  {
+    axis: 'tf',
+    prompt: '我能接受短期不舒服，只要逻辑上是对的',
+    example: '比如一段关系需要冷处理，或一项决定会让人不高兴但更合理。',
+    leftLabel: '逻辑优先',
+    rightLabel: '感受优先',
+    value: 46,
+  },
+  {
+    axis: 'tf',
+    prompt: '我很容易感受到别人语气里的情绪',
+    example: '哪怕对方说没事，我也会被语气、表情或回复速度影响。',
+    leftLabel: '不太受影响',
+    rightLabel: '很容易感到',
+    value: 68,
+  },
+  {
+    axis: 'tf',
+    prompt: '争执后，我需要对方说清事实和责任',
+    example: '只说“别生气了”不够，我需要知道到底怎么理解这件事。',
+    leftLabel: '讲清事实',
+    rightLabel: '先恢复关系',
+    value: 52,
+  },
+  {
+    axis: 'jp',
+    prompt: '事情悬而未决时，我会明显不安',
+    example: '比如关系没定义、时间没定、结果没出，我会反复想着。',
+    leftLabel: '需要确定',
+    rightLabel: '可以悬着',
+    value: 68,
+  },
+  {
+    axis: 'jp',
+    prompt: '我喜欢提前安排，而不是临场发挥',
+    example: '比如旅行、见面、办事或搬家，我更希望先有清楚计划。',
+    leftLabel: '提前安排',
+    rightLabel: '临场发挥',
+    value: 62,
+  },
+  {
+    axis: 'jp',
+    prompt: '计划被打乱后，我会先想办法重新排顺序',
+    example: '比起停在情绪里，我会想下一步、替代方案和优先级。',
+    leftLabel: '重排顺序',
+    rightLabel: '顺势看看',
+    value: 58,
+  },
+  {
+    axis: 'jp',
+    prompt: '我不喜欢别人临时改变约定',
+    example: '即使事情不大，临时变化也会让我觉得秩序被破坏。',
+    leftLabel: '很不喜欢',
+    rightLabel: '可以接受',
+    value: 60,
+  },
+  {
+    axis: 'jp',
+    prompt: '我更愿意先定一个不完美方案',
+    example: '比起一直等最优解，我宁愿先有一个可以执行的版本。',
+    leftLabel: '先定方案',
+    rightLabel: '继续开放',
+    value: 56,
+  },
+  {
+    axis: 'jp',
+    prompt: '面对新机会，我愿意暂时放下原计划',
+    example: '比如突然出现更有趣的人、工作或安排，我会不会立刻调整。',
+    leftLabel: '守住原计划',
+    rightLabel: '接受新机会',
+    value: 48,
+  },
+];
+
+export const defaultAnswers = quickMbtiAnswers;
+
 export const scenarioPresets: Scenario[] = [
   {
     id: 'silent-partner',
@@ -109,6 +307,7 @@ export const defaultQuestion = '如果亲密关系里对方一直不回消息，
 
 export const defaultRolePresets: Record<'partner' | 'friend', RolePreset> = {
   partner: {
+    id: 'default-partner',
     enabled: false,
     role: 'partner',
     label: '关键对象',
@@ -118,6 +317,7 @@ export const defaultRolePresets: Record<'partner' | 'friend', RolePreset> = {
     reason: '默认关键对象',
   },
   friend: {
+    id: 'default-friend',
     enabled: false,
     role: 'friend',
     label: '朋友/支持者',
@@ -254,6 +454,7 @@ export function inferRolePresets(question: string, previous: RolePreset[] = []):
     .map((candidate) => {
       const existing = previous.find((item) => item.role === candidate.role);
       return {
+        id: existing?.id ?? `inferred-${candidate.role}`,
         enabled: existing?.enabled ?? true,
         role: candidate.role,
         label: existing?.label || candidate.label,
@@ -266,18 +467,7 @@ export function inferRolePresets(question: string, previous: RolePreset[] = []):
   if (inferred.length > 0) {
     return inferred;
   }
-  const existing = previous.find((item) => item.role === 'other');
-  return [
-    {
-      enabled: existing?.enabled ?? true,
-      role: 'other',
-      label: existing?.label || '对方',
-      mapping: existing?.mapping || '问题里的对方/她/他/TA',
-      mbtiCode: existing?.mbtiCode || '',
-      traits: existing?.traits ?? '',
-      reason: '暂未识别到明确关系词，先按“对方”处理。',
-    },
-  ];
+  return [];
 }
 
 export function buildProfile(answers: TestAnswer[]): Profile {

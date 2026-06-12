@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { Stage } from '@pixi/react';
 import { ConvexProvider, useConvex } from 'convex/react';
 import { useAction, useMutation, useQuery } from 'convex/react';
@@ -13,13 +13,16 @@ import { useHistoricalTime } from '../../hooks/useHistoricalTime';
 import { useWorldHeartbeat } from '../../hooks/useWorldHeartbeat';
 import {
   buildProfile,
-  defaultAnswers,
   defaultQuestion,
+  fullMbtiAnswers,
   inferRolePresets,
+  quickMbtiAnswers,
 } from './mbtiModel';
 import { RolePreset, TestAnswer } from './types';
 import {
   compactText,
+  eventResponseOptions,
+  eventResponsePrompt,
   eventStatusLabel,
   guidanceResultText,
   plannedEventSections,
@@ -52,8 +55,9 @@ const experimentScales = [
 ] as const;
 
 type ExperimentScale = (typeof experimentScales)[number];
+type TestMode = 'quick' | 'full';
 type Step = 'test' | 'question' | 'observe' | 'history';
-type TownRunStatus = 'draft' | 'creating' | 'running' | 'complete' | 'failed';
+type TownRunStatus = 'draft' | 'creating' | 'awaiting_user_responses' | 'running' | 'complete' | 'failed';
 type ObserveTab = 'chat' | 'thoughts' | 'memories' | 'events';
 
 type ExperimentReport = {
@@ -69,7 +73,38 @@ type ExperimentReport = {
     why: string;
     signals: string[];
   }>;
+  evidenceLevel?: 'level_0' | 'level_1' | 'level_2' | 'level_3';
+  realUserResponseCount?: number;
+  requiredUserResponseCount?: number;
+  missingUserResponseCount?: number;
+  confidenceNotice?: string;
   limits: string;
+};
+
+type UserResponse = {
+  _id: string;
+  experimentId: string;
+  mbtiEventId: string;
+  selectedOption: string;
+  confidence: number;
+  emotions: string[];
+  freeText: string;
+  scenarioFit: 'fits' | 'partial' | 'not_fit';
+  correctionText?: string;
+  responseStatus: 'responded' | 'skipped' | 'expired_to_stage_report';
+};
+
+type DecisionState = {
+  resolvedVariables: string[];
+  uncertainVariables: string[];
+  confirmedConstraints: string[];
+  sensitiveConditions: string[];
+  responseCoverage: {
+    responded: number;
+    required: number;
+    missing: number;
+  };
+  lastUserCorrection?: string;
 };
 
 type QuestionFocus = {
@@ -81,6 +116,10 @@ type QuestionFocus = {
   theoreticalBasis?: string[];
   evidenceTargets: string[];
   eventBeats: string[];
+  startupQuestions?: Array<{
+    question: string;
+    options: string[];
+  }>;
   outcomeHypotheses?: Array<{
     label: string;
     plainConclusion: string;
@@ -96,6 +135,7 @@ type QuestionFocus = {
     questionLink?: string;
     informationGoal: string;
     judgmentSignal: string;
+    responseOptions?: string[];
   }>;
   resolutionCriteria: string;
 };
@@ -126,6 +166,8 @@ type HistoryEntry = {
 
 type StoredExperimentState = {
   answers?: TestAnswer[];
+  testMode?: TestMode;
+  answersByMode?: Partial<Record<TestMode, TestAnswer[]>>;
   question?: string;
   activeQuestion?: string;
   rolePresets?: RolePreset[] | Record<'partner' | 'friend', RolePreset>;
@@ -140,8 +182,44 @@ const storageKey = 'mbti-town-lab:v1';
 const historyResetKey = 'mbti-town-history-reset:2026-06-10-room';
 const convexIdPattern = /^[a-z0-9]+$/;
 const sliderScaleMarks = [0, 25, 50, 75, 100];
+const creatingSessionTimeoutMs = 11 * 60 * 1000;
+const creatingTimeoutMessage =
+  '加入常驻小镇等待超时。系统已经按规则自动等待长生成和最多 3 次重试，本轮已终止；请检查 Convex 后端和本地 LLM/Ollama 是否可用，或调整问题后再进入。';
 const customDurationMinHours = 2;
 const customDurationMaxHours = 8;
+const mbtiTestModes: Array<{
+  id: TestMode;
+  label: string;
+  count: number;
+  description: string;
+}> = [
+  {
+    id: 'quick',
+    label: '精简版',
+    count: quickMbtiAnswers.length,
+    description: '8 题快速采样，适合先跑一次小镇演化。',
+  },
+  {
+    id: 'full',
+    label: '全量版',
+    count: fullMbtiAnswers.length,
+    description: '32 题完整采样，每个维度覆盖更多生活情境。',
+  },
+];
+const joiningTownSteps = [
+  {
+    title: '理解你的问题',
+    detail: '拆出本轮真正需要观察的择偶变量',
+  },
+  {
+    title: '设计情境探针',
+    detail: '生成和问题直接相关的具体生活事件',
+  },
+  {
+    title: '安排角色入场',
+    detail: '把访客、临时对象和常驻居民放进同一轮观察',
+  },
+] as const;
 const personalityMeta = {
   INTJ: { title: '战略规划者', group: '分析型', tone: 'violet', badge: '棋' },
   INTP: { title: '模型构建者', group: '分析型', tone: 'violet', badge: '理' },
@@ -162,6 +240,7 @@ const personalityMeta = {
 } as const;
 
 type PersonalityCode = keyof typeof personalityMeta;
+const personalityCodeOptions = Object.keys(personalityMeta) as PersonalityCode[];
 
 function normalizePersonalityCode(code: string | undefined): PersonalityCode | undefined {
   const normalized = code?.trim().toUpperCase();
@@ -171,6 +250,7 @@ function normalizePersonalityCode(code: string | undefined): PersonalityCode | u
 function normalizeRolePreset(preset: RolePreset): RolePreset {
   return {
     ...preset,
+    id: preset.id || `${preset.role}-${preset.label || 'role'}-${preset.mapping || 'mapping'}`,
     mapping: preset.mapping || defaultMappingForRole(preset.role),
   };
 }
@@ -180,7 +260,20 @@ function normalizeRolePresets(presets: RolePreset[]): RolePreset[] {
 }
 
 function rolePresetsForCreateExperiment(presets: RolePreset[]) {
-  return presets.map(({ mapping: _mapping, ...preset }) => preset);
+  return presets.map(({ id: _id, ...preset }) => preset);
+}
+
+function createRolePreset(overrides: Partial<RolePreset> = {}): RolePreset {
+  return normalizeRolePreset({
+    id: overrides.id ?? `custom-${Date.now()}-${Math.round(Math.random() * 10000)}`,
+    enabled: overrides.enabled ?? true,
+    role: overrides.role ?? 'other',
+    label: overrides.label ?? '新角色',
+    mapping: overrides.mapping ?? '问题里的相关人物',
+    mbtiCode: overrides.mbtiCode ?? '',
+    traits: overrides.traits ?? '',
+    reason: overrides.reason ?? '手动添加的本次参与角色。',
+  });
 }
 
 function clampCustomDurationHours(value: number) {
@@ -220,10 +313,17 @@ function formatDuration(durationMs: number) {
 }
 
 function userEntryModeFromRoles(presets: RolePreset[]) {
+  const normalizedRoleText = (preset: RolePreset) => `${preset.role} ${preset.label} ${preset.mapping}`;
   const hasPartner = presets.some(
-    (preset) => preset.enabled && (preset.role === 'partner' || preset.role === 'ambiguous'),
+    (preset) =>
+      preset.enabled &&
+      (preset.role === 'partner' ||
+        preset.role === 'ambiguous' ||
+        /伴侣|女朋友|男朋友|对象|老婆|老公|暧昧|喜欢的人/.test(normalizedRoleText(preset))),
   );
-  const hasFriend = presets.some((preset) => preset.enabled && preset.role === 'friend');
+  const hasFriend = presets.some(
+    (preset) => preset.enabled && (preset.role === 'friend' || /朋友|闺蜜|兄弟|同学|室友/.test(normalizedRoleText(preset))),
+  );
   if (hasPartner && hasFriend) {
     return 'with_partner_and_friend';
   }
@@ -234,6 +334,28 @@ function userEntryModeFromRoles(presets: RolePreset[]) {
     return 'with_friend';
   }
   return 'solo';
+}
+
+function inferActorRoleFromText(text: string): RolePreset['role'] {
+  if (/伴侣|女朋友|男朋友|对象|老婆|老公|恋人/.test(text)) {
+    return 'partner';
+  }
+  if (/暧昧|喜欢的人|crush|约会对象/i.test(text)) {
+    return 'ambiguous';
+  }
+  if (/朋友|闺蜜|兄弟|同学|室友/.test(text)) {
+    return 'friend';
+  }
+  if (/同事|上司|领导|老板|客户|工作/.test(text)) {
+    return 'coworker';
+  }
+  if (/家人|父母|妈妈|爸爸|亲戚|孩子/.test(text)) {
+    return 'family';
+  }
+  if (/前任|前男友|前女友/.test(text)) {
+    return 'ex';
+  }
+  return 'other';
 }
 
 function defaultMappingForRole(role: RolePreset['role']) {
@@ -290,6 +412,7 @@ function normalizeHistoryEntry(entry: unknown): HistoryEntry | null {
     : normalizeRolePresets(inferRolePresets(question));
   const status =
     raw.status === 'creating' ||
+    raw.status === 'awaiting_user_responses' ||
     raw.status === 'running' ||
     raw.status === 'complete' ||
     raw.status === 'failed' ||
@@ -326,6 +449,49 @@ function answerValueText(answer: TestAnswer) {
   return `${answer.value}，两边接近`;
 }
 
+function answersForMode(mode: TestMode) {
+  return mode === 'full' ? fullMbtiAnswers : quickMbtiAnswers;
+}
+
+function inferTestMode(state: StoredExperimentState): TestMode {
+  if (state.testMode === 'full' || state.testMode === 'quick') {
+    return state.testMode;
+  }
+  return (state.answers?.length ?? 0) > quickMbtiAnswers.length ? 'full' : 'quick';
+}
+
+function mergeAnswerSet(fallback: TestAnswer[], stored?: TestAnswer[]) {
+  if (!Array.isArray(stored) || stored.length === 0) {
+    return fallback.map((answer) => ({ ...answer }));
+  }
+  return fallback.map((answer, index) => {
+    const exact = stored.find(
+      (candidate) => candidate.axis === answer.axis && candidate.prompt === answer.prompt,
+    );
+    const positional = stored[index]?.axis === answer.axis ? stored[index] : undefined;
+    const source = exact ?? positional;
+    return {
+      ...answer,
+      value: Number.isFinite(source?.value) ? Math.max(0, Math.min(100, Number(source?.value))) : answer.value,
+    };
+  });
+}
+
+function initialAnswerSets(state: StoredExperimentState): Record<TestMode, TestAnswer[]> {
+  const inferredMode = inferTestMode(state);
+  const legacyAnswers = state.answers;
+  return {
+    quick: mergeAnswerSet(
+      quickMbtiAnswers,
+      state.answersByMode?.quick ?? (inferredMode === 'quick' ? legacyAnswers : undefined),
+    ),
+    full: mergeAnswerSet(
+      fullMbtiAnswers,
+      state.answersByMode?.full ?? (inferredMode === 'full' ? legacyAnswers : undefined),
+    ),
+  };
+}
+
 function normalizeHistory(history: unknown[] | undefined): HistoryEntry[] {
   if (!Array.isArray(history)) {
     return [];
@@ -338,7 +504,10 @@ function normalizeHistory(history: unknown[] | undefined): HistoryEntry[] {
 
 export default function MbtiExperiment() {
   const [storedState] = useState(readStoredState);
-  const [answers, setAnswers] = useState<TestAnswer[]>(storedState.answers ?? defaultAnswers);
+  const [testMode, setTestMode] = useState<TestMode>(inferTestMode(storedState));
+  const [answersByMode, setAnswersByMode] = useState<Record<TestMode, TestAnswer[]>>(
+    initialAnswerSets(storedState),
+  );
   const [question, setQuestion] = useState(storedState.question ?? defaultQuestion);
   const [activeQuestion, setActiveQuestion] = useState(
     storedState.activeQuestion ?? storedState.question ?? defaultQuestion,
@@ -346,7 +515,7 @@ export default function MbtiExperiment() {
   const [rolePresets, setRolePresets] = useState<RolePreset[]>(
     Array.isArray(storedState.rolePresets)
       ? normalizeRolePresets(storedState.rolePresets)
-      : normalizeRolePresets(inferRolePresets(storedState.question ?? defaultQuestion)),
+      : [],
   );
   const [experimentScale, setExperimentScale] = useState<ExperimentScale>(
     experimentScales.find((scale) => scale.id === storedState.experimentScaleId) ??
@@ -368,6 +537,9 @@ export default function MbtiExperiment() {
   const createExperiment = useMutation(api.mbti.createExperiment);
   const deleteExperiment = useMutation(api.mbti.deleteExperiment);
   const clearAllExperiments = useMutation(api.mbti.clearAllExperiments);
+  const submitUserResponse = useMutation(api.mbti.submitUserResponse);
+  const skipUserResponse = useMutation(api.mbti.skipUserResponse);
+  const startExperimentEvolution = useMutation(api.mbti.startExperimentEvolution);
   const seedDefaultTown = useMutation(api.mbtiTown.seedDefaultTown);
   const createSceneRequest = useAction(api.mbtiTownPlanner.planAndCreateSceneRequest);
   const defaultTown = useQuery(api.mbtiTown.getDefaultTown);
@@ -383,6 +555,7 @@ export default function MbtiExperiment() {
       : undefined
     : isLikelyConvexId(activeWorldId) ? activeWorldId as Id<'worlds'> : undefined;
   useWorldHeartbeat(heartbeatWorldId);
+  const answers = answersByMode[testMode];
   const profile = useMemo(() => buildProfile(answers), [answers]);
   const hasPendingQuestion = question.trim() !== activeQuestion.trim();
   const enabledRoles = rolePresets.filter((role) => role.enabled);
@@ -405,7 +578,7 @@ export default function MbtiExperiment() {
     if (!experimentState) {
       return {
         label: '尚未连接观察数据',
-        detail: '创建实验小镇后，这里会显示角色状态、对话、事件和记忆。',
+        detail: '加入常驻小镇后，这里会显示角色状态、对话、事件和记忆。',
       };
     }
     if (messageCount > 0 || memoryCount > 0 || archivedConversationCount > 0) {
@@ -445,6 +618,44 @@ export default function MbtiExperiment() {
   }, [experimentState?.engine, experimentState?.worldStatus]);
 
   useEffect(() => {
+    if (
+      runStatus !== 'creating' ||
+      !activeSession ||
+      activeSession.experimentId ||
+      activeSession.worldId
+    ) {
+      return;
+    }
+    const elapsedMs = Date.now() - activeSession.createdAt;
+    if (elapsedMs >= creatingSessionTimeoutMs) {
+      const failedSession: HistoryEntry = {
+        ...activeSession,
+        status: 'failed',
+        error: creatingTimeoutMessage,
+      };
+      setRunStatus('failed');
+      setActiveSession(failedSession);
+      setHistory((current) =>
+        current.map((entry) => (entry.id === activeSession.id ? failedSession : entry)),
+      );
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      const failedSession: HistoryEntry = {
+        ...activeSession,
+        status: 'failed',
+        error: creatingTimeoutMessage,
+      };
+      setRunStatus('failed');
+      setActiveSession(failedSession);
+      setHistory((current) =>
+        current.map((entry) => (entry.id === activeSession.id ? failedSession : entry)),
+      );
+    }, creatingSessionTimeoutMs - elapsedMs);
+    return () => window.clearTimeout(timeout);
+  }, [activeSession, runStatus]);
+
+  useEffect(() => {
     const experiment = experimentState?.experiment;
     if (!experiment || !activeSession?.experimentId || activeSession.experimentId !== experiment._id) {
       return;
@@ -473,6 +684,8 @@ export default function MbtiExperiment() {
       storageKey,
       JSON.stringify({
         answers,
+        testMode,
+        answersByMode,
         question,
         activeQuestion,
         rolePresets,
@@ -487,35 +700,64 @@ export default function MbtiExperiment() {
     activeQuestion,
     activeSession,
     answers,
+    answersByMode,
     customDurationHours,
     experimentScale.id,
     history,
     question,
     rolePresets,
     runStartedAt,
+    testMode,
   ]);
 
-  useEffect(() => {
-    setRolePresets((current) => normalizeRolePresets(inferRolePresets(question, current)));
-  }, [question]);
-
   function updateAnswer(index: number, value: number) {
-    setAnswers((current) =>
-      current.map((answer, answerIndex) =>
+    setAnswersByMode((current) => ({
+      ...current,
+      [testMode]: current[testMode].map((answer, answerIndex) =>
         answerIndex === index ? { ...answer, value } : answer,
       ),
+    }));
+  }
+
+  function switchTestMode(nextMode: TestMode) {
+    setTestMode(nextMode);
+    setAnswersByMode((current) => ({
+      ...current,
+      [nextMode]: current[nextMode] ?? mergeAnswerSet(answersForMode(nextMode)),
+    }));
+  }
+
+  function resetCurrentTest() {
+    setAnswersByMode((current) => ({
+      ...current,
+      [testMode]: mergeAnswerSet(answersForMode(testMode)),
+    }));
+  }
+
+  function resetAllTests() {
+    setAnswersByMode({
+      quick: mergeAnswerSet(quickMbtiAnswers),
+      full: mergeAnswerSet(fullMbtiAnswers),
+    });
+  }
+
+  function updateRole(id: string, patch: Partial<RolePreset>) {
+    setRolePresets((current) =>
+      current.map((preset) => (preset.id === id ? normalizeRolePreset({ ...preset, ...patch }) : preset)),
     );
   }
 
-  function updateRole(role: string, patch: Partial<RolePreset>) {
-    setRolePresets((current) =>
-      current.map((preset) => (preset.role === role ? { ...preset, ...patch } : preset)),
-    );
+  function addRole() {
+    setRolePresets((current) => [...current, createRolePreset()]);
+  }
+
+  function removeRole(id: string) {
+    setRolePresets((current) => current.filter((preset) => preset.id !== id));
   }
 
   async function prepareTownEvolution() {
     const nextQuestion = question.trim() || defaultQuestion;
-    const effectiveRolePresets = normalizeRolePresets(inferRolePresets(nextQuestion, rolePresets));
+    const effectiveRolePresets = normalizeRolePresets(rolePresets);
     const startedAt = Date.now();
     const draftSession: HistoryEntry = {
       id: `${startedAt}`,
@@ -539,6 +781,7 @@ export default function MbtiExperiment() {
       const sceneRequest = await createSceneRequest({
         townId: seededTown.townId,
         question: nextQuestion,
+        targetEventCount: observationEventCount(experimentScale, customDurationHours),
         userEntryMode: userEntryModeFromRoles(effectiveRolePresets),
       });
       const result = await createExperiment({
@@ -558,9 +801,9 @@ export default function MbtiExperiment() {
           targetEventCount: observationEventCount(experimentScale, customDurationHours),
         },
       });
-      const runningSession: HistoryEntry = {
+      const waitingSession: HistoryEntry = {
         ...draftSession,
-        status: 'running',
+        status: 'awaiting_user_responses',
         townId: sceneRequest.townId,
         sceneRequestId: sceneRequest.sceneRequestId,
         sceneType: sceneRequest.sceneType,
@@ -580,17 +823,20 @@ export default function MbtiExperiment() {
         engineId: result.engineId,
         agentInputIds: result.agentInputIds,
       };
-      setRunStatus('running');
-      setActiveSession(runningSession);
+      setRunStatus('awaiting_user_responses');
+      setActiveSession(waitingSession);
       setLiveExperimentId(result.experimentId);
       setHistory((current) =>
-        current.map((entry) => (entry.id === draftSession.id ? runningSession : entry)),
+        current.map((entry) => (entry.id === draftSession.id ? waitingSession : entry)),
       );
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '加入常驻小镇失败';
       const failedSession: HistoryEntry = {
         ...draftSession,
         status: 'failed',
-        error: error instanceof Error ? error.message : '创建实验小镇失败',
+        error: errorMessage.includes('情境探针生成失败')
+          ? errorMessage
+          : `加入常驻小镇失败：${errorMessage}`,
       };
       setRunStatus('failed');
       setActiveSession(failedSession);
@@ -598,6 +844,27 @@ export default function MbtiExperiment() {
       setHistory((current) =>
         current.map((entry) => (entry.id === draftSession.id ? failedSession : entry)),
       );
+    }
+  }
+
+  async function startPreparedEvolution() {
+    if (!activeSession?.experimentId || !convexIdPattern.test(activeSession.experimentId)) {
+      return;
+    }
+    try {
+      await startExperimentEvolution({ experimentId: activeSession.experimentId as never });
+      const runningSession: HistoryEntry = {
+        ...activeSession,
+        status: 'running',
+      };
+      setRunStatus('running');
+      setActiveSession(runningSession);
+      setHistory((current) =>
+        current.map((entry) => (entry.id === activeSession.id ? runningSession : entry)),
+      );
+    } catch (error) {
+      console.error('Failed to start MBTI evolution', error);
+      window.alert(error instanceof Error ? error.message : '正式启动小镇演化失败，请稍后重试。');
     }
   }
 
@@ -656,6 +923,8 @@ export default function MbtiExperiment() {
         storageKey,
         JSON.stringify({
           answers,
+          testMode,
+          answersByMode,
           question,
           activeQuestion,
           rolePresets,
@@ -682,20 +951,6 @@ export default function MbtiExperiment() {
               结论必须来自角色移动、对话、记忆和事件演化，不再使用瞬时预览。
             </p>
           </div>
-          <section className="mbti-status" aria-label="当前人格">
-            <PersonalityAvatar code={profile.code} size="large" />
-            <div className="mbti-status-copy">
-              <span>当前人格</span>
-              <strong className="mbti-code">{profile.code}</strong>
-              <em>{personalityMeta[profile.code as PersonalityCode]?.title ?? '人格画像生成中'}</em>
-              <span>
-                当前使用「{observationLabel(experimentScale, customDurationHours)}」。
-                {defaultTown
-                  ? `常驻小镇已准备：${defaultTown.counts.residents} 位居民、${defaultTown.counts.relationships} 条关系。`
-                  : '下一步会先创建常驻小镇底座。'}
-              </span>
-            </div>
-          </section>
         </header>
 
         <nav className="mbti-stepper" aria-label="实验步骤">
@@ -707,11 +962,34 @@ export default function MbtiExperiment() {
 
         {activeStep === 'test' && (
           <section className="mbti-panel">
-            <h2>1. 人格权重快速采样</h2>
+            <h2>1. 人格测试</h2>
             <p className="mbti-section-note">
-              当前 8 题只用于给小镇模拟生成 E/I/S/N/T/F/J/P 的初始权重，不等同于正式 MBTI 量表。
-              测试结果会自动保留，后面换问题也不用重测。
+              先选择精简版或全量版。这里用于生成小镇角色的 E/I/S/N/T/F/J/P 权重，不等同于官方 MBTI 量表；
+              两种版本的答案都会自动保留，后面换问题也不用重测。
             </p>
+            <div className="mbti-test-mode-picker" role="group" aria-label="选择人格测试版本">
+              {mbtiTestModes.map((mode) => (
+                <button
+                  data-active={testMode === mode.id}
+                  key={mode.id}
+                  onClick={() => switchTestMode(mode.id)}
+                  type="button"
+                >
+                  <strong>{mode.label}</strong>
+                  <span>{mode.count} 题</span>
+                  <p>{mode.description}</p>
+                </button>
+              ))}
+              <div className="mbti-test-mode-actions">
+                <span>当前：{answers.length} 题</span>
+                <button onClick={resetCurrentTest} type="button">
+                  重置当前版本
+                </button>
+                <button onClick={resetAllTests} type="button">
+                  重置全部
+                </button>
+              </div>
+            </div>
             <div className="mbti-questions">
               {answers.map((answer, index) => (
                 <div className="mbti-question" key={`${answer.axis}-${index}`}>
@@ -751,6 +1029,23 @@ export default function MbtiExperiment() {
                 </div>
               ))}
             </div>
+            <section className="mbti-profile-result">
+              <div>
+                <h2>2. 人格构成</h2>
+                <p className="mbti-section-note">
+                  完成测试后先确认当前人格画像，再进入问题描述。后续小镇演化会基于这个画像生成角色反应。
+                </p>
+              </div>
+              <div className="mbti-profile-layout">
+                <div className="mbti-bars">
+                  <AxisBar left="E" right="I" leftValue={profile.weights.e} rightValue={profile.weights.i} />
+                  <AxisBar left="S" right="N" leftValue={profile.weights.s} rightValue={profile.weights.n} />
+                  <AxisBar left="T" right="F" leftValue={profile.weights.t} rightValue={profile.weights.f} />
+                  <AxisBar left="J" right="P" leftValue={profile.weights.j} rightValue={profile.weights.p} />
+                </div>
+                <PersonalityStatusCard code={profile.code} />
+              </div>
+            </section>
             <button className="mbti-action" onClick={() => setActiveStep('question')} type="button">
               下一步：描述问题
             </button>
@@ -759,16 +1054,8 @@ export default function MbtiExperiment() {
 
         {activeStep === 'question' && (
           <section className="mbti-panel">
-            <h2>2. 人格构成</h2>
-            <div className="mbti-bars">
-              <AxisBar left="E" right="I" leftValue={profile.weights.e} rightValue={profile.weights.i} />
-              <AxisBar left="S" right="N" leftValue={profile.weights.s} rightValue={profile.weights.n} />
-              <AxisBar left="T" right="F" leftValue={profile.weights.t} rightValue={profile.weights.f} />
-              <AxisBar left="J" right="P" leftValue={profile.weights.j} rightValue={profile.weights.p} />
-            </div>
-
-            <section className="mbti-question-block">
-              <h2>3. 描述你想验证的问题</h2>
+            <section className="mbti-question-block mbti-question-block-primary">
+              <h2>2. 描述你想验证的问题</h2>
               <p className="mbti-section-note">
                 直接写一个具体社会问题。每次进入都会使用全新的访客身份；你带入的伴侣或朋友也只属于本次场景，
                 不会和过往聊天记录或记忆耦合。
@@ -785,21 +1072,30 @@ export default function MbtiExperiment() {
                 <div>
                   <h3>对象预设</h3>
                   <p>
-                    这里会随问题动态变化。MBTI 可选；关系背景建议写清历史关系和最近状态，
-                    这样角色进入小镇后更容易自然推进。
+                    不默认添加角色。需要带入伴侣、朋友、同事或其他对象时，用加号新增；不需要就保持为空。
                   </p>
                 </div>
-                <button onClick={refreshInferredRoles} type="button">
-                  根据问题重新识别
-                </button>
+                <div className="mbti-role-actions">
+                  <button aria-label="添加预设角色" onClick={addRole} type="button">
+                    +
+                  </button>
+                  <button onClick={refreshInferredRoles} type="button">
+                    根据问题识别
+                  </button>
+                </div>
               </div>
-              {rolePresets.map((preset) => (
-                <RoleEditor
-                  key={preset.role}
-                  value={preset}
-                  onChange={(patch) => updateRole(preset.role, patch)}
-                />
-              ))}
+              {rolePresets.length > 0 ? (
+                rolePresets.map((preset) => (
+                  <RoleEditor
+                    key={preset.id}
+                    value={preset}
+                    onChange={(patch) => updateRole(preset.id, patch)}
+                    onRemove={() => removeRole(preset.id)}
+                  />
+                ))
+              ) : (
+                <p className="mbti-role-empty">当前不带入额外角色。小镇会只以“我”的身份进入演化。</p>
+              )}
             </section>
             <div className="mbti-scale-picker">
               <span className="mbti-scale-title">选择小镇观察方式</span>
@@ -852,46 +1148,90 @@ export default function MbtiExperiment() {
               </p>
             </div>
             <button className="mbti-action" onClick={prepareTownEvolution} type="button">
-              进入常驻小镇并创建本次场景
+              以新访客身份加入常驻小镇
             </button>
           </section>
         )}
 
         {activeStep === 'observe' && (
-          <section className="mbti-panel mt-5 mbti-report">
+          <section className="mbti-panel mt-5 mbti-report" data-busy={runStatus === 'creating'}>
             <div className="mbti-observe-topbar">
               <div className="mbti-observe-title">
                 <h2>4. 模拟观察</h2>
                 <strong>
                   {runStatus === 'draft'
-                    ? '尚未创建实验小镇'
+                    ? '尚未加入常驻小镇'
                     : runStatus === 'creating'
-                      ? '正在创建实验小镇'
-                      : runStatus === 'running'
-                        ? '小镇正在演化'
-                        : runStatus === 'failed'
-                          ? '创建实验小镇失败'
-                          : '小镇演化已完成'}
+                      ? '正在动态生成情境探针'
+                      : runStatus === 'awaiting_user_responses'
+                        ? '已加入小镇，等待启动前回应'
+                        : runStatus === 'running'
+                          ? '小镇正在演化'
+                          : runStatus === 'failed'
+                            ? '加入常驻小镇失败'
+                            : '小镇演化已完成'}
                 </strong>
                 <span>
                   {experimentState?.world
                     ? `${experimentState.world.players.length} 个角色 · ${experimentState.world.conversations.length} 段对话中 · ${experimentState?.messages.length ?? 0} 条聊天`
                     : runStatus === 'failed'
                       ? activeSession?.error ?? '请检查 Convex 后端是否已启动。'
-                      : '准备好后会在下方显示小镇画布'}
+                      : runStatus === 'creating'
+                        ? '正在根据你的具体问题动态生成探针，可能需要数分钟；失败会自动重试，连续 3 次失败后才会终止。'
+                        : runStatus === 'awaiting_user_responses'
+                          ? '先完成启动前关键回应，再正式启动小镇演化。'
+                        : '准备好后会在下方显示常驻小镇画布'}
                 </span>
                 {experimentState?.world && <span>{engineHealth}</span>}
-                {hasPendingQuestion && <span className="mbti-warning">问题已修改，需要重新创建实验小镇。</span>}
+                {hasPendingQuestion && <span className="mbti-warning">问题已修改，需要以新访客身份重新进入小镇。</span>}
               </div>
               <div className="mbti-observe-actions">
-                <button onClick={() => setActiveStep('question')} type="button">
+                <button disabled={runStatus === 'creating'} onClick={() => setActiveStep('question')} type="button">
                   修改问题
                 </button>
-                <button onClick={prepareTownEvolution} type="button">
-                  {runStatus === 'creating' ? '正在创建...' : '以新访客身份重新进入'}
+                <button disabled={runStatus === 'creating'} onClick={prepareTownEvolution} type="button">
+                  {runStatus === 'creating' ? '正在加入...' : '以新访客身份重新进入'}
                 </button>
               </div>
             </div>
+
+            {runStatus === 'creating' && (
+              <div aria-live="polite" className="mbti-creating-overlay" role="status">
+                <div>
+                  <span>正在加入常驻小镇</span>
+                  <strong>请稍等，正在为这次问题生成专属情境</strong>
+                  <div className="mbti-joining-progress" aria-hidden="true">
+                    <i />
+                  </div>
+                  <ol>
+                    {joiningTownSteps.map((step, index) => (
+                      <li key={step.title} style={{ '--step-index': index } as CSSProperties}>
+                        <b>{step.title}</b>
+                        <em>{step.detail}</em>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
+            )}
+
+            {runStatus === 'awaiting_user_responses' &&
+              experimentState?.experiment._id &&
+              experimentState.events.length > 0 &&
+              (experimentState.experiment.questionFocus?.startupQuestions?.length ?? 0) > 0 && (
+                <StartupResponseDialog
+                  onStart={startPreparedEvolution}
+                  startupQuestions={experimentState.experiment.questionFocus?.startupQuestions ?? []}
+                />
+              )}
+
+            {runStatus === 'awaiting_user_responses' &&
+              experimentState?.experiment._id &&
+              (experimentState.experiment.questionFocus?.startupQuestions?.length ?? 0) === 0 && (
+                <div className="mbti-startup-missing">
+                  本轮没有生成合格的启动前关键问题。系统不会使用兜底问题，本轮已终止。
+                </div>
+              )}
 
             {experimentState?.world && (
               <section className="mbti-town-stage">
@@ -950,12 +1290,18 @@ export default function MbtiExperiment() {
               behaviorEvents={experimentState?.behaviorEvents ?? []}
               eventEvidence={experimentState?.eventEvidence ?? []}
               events={experimentState?.events ?? []}
+              experimentId={experimentState?.experiment._id}
               innerThoughts={experimentState?.innerThoughts ?? []}
               messages={experimentState?.messages ?? []}
+              onSubmitUserResponse={submitUserResponse}
+              onSkipUserResponse={skipUserResponse}
               playerDescriptions={experimentState?.playerDescriptions ?? []}
               questionFocus={effectiveQuestionFocus}
+              decisionState={experimentState?.experiment.decisionState}
               runStatus={runStatus}
               socialEvents={experimentState?.socialEvents ?? []}
+              userResponses={experimentState?.userResponses ?? []}
+              showInlineResponses={runStatus !== 'awaiting_user_responses'}
             />
 
             <details className="mbti-observe-details">
@@ -1226,11 +1572,20 @@ function FinalReport({ report }: { report: ExperimentReport }) {
           <span>演化结论</span>
           <strong>{displayHeadline}</strong>
           <p>{displayExplanation}</p>
+          {report.confidenceNotice && (
+            <p className="mbti-confidence-notice">
+              {evidenceLevelLabel(report.evidenceLevel)} · {report.confidenceNotice}
+            </p>
+          )}
         </div>
         <aside>
           <span>{isFlat ? '反应分布' : '主倾向'}</span>
           <strong>{isFlat ? '混合' : `${topOption?.probability ?? 0}%`}</strong>
-          <small>{isFlat ? `最高和最低只差 ${spread} 点` : topOption?.label}</small>
+          <small>
+            {report.requiredUserResponseCount
+              ? `真实回应 ${report.realUserResponseCount ?? 0}/${report.requiredUserResponseCount}`
+              : isFlat ? `最高和最低只差 ${spread} 点` : topOption?.label}
+          </small>
         </aside>
       </header>
 
@@ -1273,6 +1628,19 @@ function FinalReport({ report }: { report: ExperimentReport }) {
       </details>
     </section>
   );
+}
+
+function evidenceLevelLabel(level?: ExperimentReport['evidenceLevel']) {
+  if (level === 'level_3') {
+    return '高可信';
+  }
+  if (level === 'level_2') {
+    return '阶段可信';
+  }
+  if (level === 'level_1') {
+    return '低可信';
+  }
+  return '待回应';
 }
 
 function supportLabel(index: number) {
@@ -1376,14 +1744,20 @@ function ExperimentTownFrame({
 
 function QuestionGuidanceRail({
   behaviorEvents,
+  decisionState,
   eventEvidence: persistedEventEvidence,
   events,
+  experimentId,
   innerThoughts,
   messages,
+  onSubmitUserResponse,
+  onSkipUserResponse,
   playerDescriptions,
   questionFocus,
   runStatus,
+  showInlineResponses,
   socialEvents,
+  userResponses,
 }: {
   behaviorEvents: Array<{
     _id: string;
@@ -1393,6 +1767,7 @@ function QuestionGuidanceRail({
     mbtiEventId: string;
     playerId: string;
   }>;
+  decisionState?: DecisionState;
   eventEvidence: Array<{
     _id: string;
     kind: 'social_event' | 'message' | 'behavior' | 'thought' | string;
@@ -1409,7 +1784,18 @@ function QuestionGuidanceRail({
     title: string;
     description: string;
     status: string;
+    testedVariable?: string;
+    testedHypotheses?: string[];
+    questionLink?: string;
+    informationGoal?: string;
+    expectedSignals?: string[];
+    responseOptions?: string[];
+    residentRoles?: string[];
+    residentParticipationGoal?: string;
+    probeOrigin?: 'initial' | 'adaptive' | 'calibration';
+    adaptiveReason?: string;
   }>;
+  experimentId?: Id<'mbtiExperiments'>;
   innerThoughts: Array<{
     _creationTime?: number;
     playerId: string;
@@ -1422,12 +1808,28 @@ function QuestionGuidanceRail({
     author: string;
     text: string;
   }>;
+  onSubmitUserResponse: (args: {
+    experimentId: Id<'mbtiExperiments'>;
+    mbtiEventId: Id<'mbtiEvents'>;
+    selectedOption: string;
+    confidence: number;
+    emotions: string[];
+    freeText: string;
+    scenarioFit: 'fits' | 'partial' | 'not_fit';
+    correctionText?: string;
+  }) => Promise<unknown>;
+  onSkipUserResponse: (args: {
+    experimentId: Id<'mbtiExperiments'>;
+    mbtiEventId: Id<'mbtiEvents'>;
+    reason?: string;
+  }) => Promise<unknown>;
   playerDescriptions: Array<{
     playerId: string;
     name: string;
   }>;
   questionFocus?: QuestionFocus;
   runStatus: TownRunStatus;
+  showInlineResponses: boolean;
   socialEvents: Array<{
     _id: string;
     title: string;
@@ -1436,6 +1838,7 @@ function QuestionGuidanceRail({
     mbtiEventId?: string;
     participantIds?: string[];
   }>;
+  userResponses: UserResponse[];
 }) {
   if (!questionFocus) {
     return null;
@@ -1445,6 +1848,14 @@ function QuestionGuidanceRail({
   const nextEvent = events.find((event) => event.status === 'seeded');
   const activeEvent = events.find((event) => event.status !== 'seeded');
   const playerNameById = new Map(playerDescriptions.map((description) => [description.playerId, description.name]));
+  const userResponseByEvent = new Map(userResponses.map((response) => [response.mbtiEventId, response]));
+  const terminalResponseStatuses = new Set(['responded', 'skipped', 'expired_to_stage_report']);
+  const pendingResponseEvents = events.filter((event) =>
+    event.status !== 'seeded' &&
+    event.status !== 'moving' &&
+    !terminalResponseStatuses.has(event.status) &&
+    !userResponseByEvent.has(event._id),
+  );
   const persistedEvidenceByEvent = new Map<string, typeof persistedEventEvidence>();
   for (const evidence of persistedEventEvidence) {
     const current = persistedEvidenceByEvent.get(evidence.mbtiEventId) ?? [];
@@ -1603,21 +2014,67 @@ function QuestionGuidanceRail({
           </article>
         ))}
       </div>
+      {decisionState && (
+        <section className="mbti-decision-state">
+          <header>
+            <span>动态校准</span>
+            <strong>
+              真实回应 {decisionState.responseCoverage.responded}/{decisionState.responseCoverage.required}
+            </strong>
+            <em>
+              {decisionState.responseCoverage.missing > 0
+                ? `还缺 ${decisionState.responseCoverage.missing} 个关键回应`
+                : '关键回应覆盖完整'}
+            </em>
+          </header>
+          <div>
+            <DecisionStateGroup title="已确认变量" items={decisionState.resolvedVariables} emptyText="还没有变量被用户回应确认。" />
+            <DecisionStateGroup title="仍需测试" items={decisionState.uncertainVariables} emptyText="暂无待测试变量。" />
+            <DecisionStateGroup title="现实约束" items={decisionState.confirmedConstraints} emptyText="暂未记录现实约束。" />
+            <DecisionStateGroup title="敏感条件" items={decisionState.sensitiveConditions} emptyText="暂未识别敏感条件。" />
+          </div>
+          {decisionState.lastUserCorrection && (
+            <p>最近修正：{decisionState.lastUserCorrection}</p>
+          )}
+        </section>
+      )}
+      {pendingResponseEvents.length > 0 && (
+        <section className="mbti-response-queue">
+          <header>
+            <span>待回应关键节点</span>
+            <strong>{pendingResponseEvents.length}</strong>
+          </header>
+          <ul>
+            {pendingResponseEvents.slice(0, 5).map((event) => (
+              <li key={event._id}>
+                <b>{event.title}</b>
+                <span>{event.testedVariable ?? plannedEventSections(event.description).observationAxis ?? '关键变量待确认'}</span>
+              </li>
+            ))}
+          </ul>
+          <p>这些节点会等待你的真实选择；不回应时最终只进入低可信阶段报告。</p>
+        </section>
+      )}
       {events.length > 0 && (
         <div className="mbti-guidance-events">
           {eventProgressEvidence.map(({ event, matchedBehaviors, matchedMessages, matchedThoughts, record }) => (
             <EventProgressCard
               event={event}
+              experimentId={experimentId}
               key={event._id}
               matchedBehaviors={matchedBehaviors}
               matchedMessages={matchedMessages}
               matchedThoughts={matchedThoughts}
+              onSubmitUserResponse={onSubmitUserResponse}
+              onSkipUserResponse={onSkipUserResponse}
               participantCount={record?.participantIds?.length ?? 0}
               playerNameById={playerNameById}
               recordDescription={record?.description}
               recordedAt={record?.createdAt}
               scenarioContext={`${questionFocus.observationGoal} ${questionFocus.drivingTension} ${questionFocus.resolutionCriteria} ${event.description}`}
               resolutionCriteria={questionFocus.resolutionCriteria}
+              showInlineResponse={showInlineResponses}
+              userResponse={userResponseByEvent.get(event._id)}
             />
           ))}
         </div>
@@ -1655,24 +2112,158 @@ function QuestionGuidanceRail({
   );
 }
 
+function StartupResponseDialog({
+  onStart,
+  startupQuestions,
+}: {
+  onStart: () => Promise<void>;
+  startupQuestions: StartupQuestion[];
+}) {
+  const [answersByQuestion, setAnswersByQuestion] = useState<Record<number, string>>({});
+  const [notesByQuestion, setNotesByQuestion] = useState<Record<number, string>>({});
+  const [starting, setStarting] = useState(false);
+  const completedCount = startupQuestions.filter((_, index) => answersByQuestion[index]).length;
+  const canStart = startupQuestions.length > 0 && completedCount === startupQuestions.length && !starting;
+
+  function chooseOption(questionIndex: number, option: string) {
+    setAnswersByQuestion((current) => ({
+      ...current,
+      [questionIndex]: option,
+    }));
+  }
+
+  function saveCustomAnswer(questionIndex: number) {
+    const note = notesByQuestion[questionIndex]?.trim() ?? '';
+    if (!note) {
+      return;
+    }
+    chooseOption(questionIndex, `补充条件：${compactText(note, 36)}`);
+  }
+
+  return (
+    <div className="mbti-startup-dialog" role="dialog" aria-modal="true" aria-label="启动前关键回应">
+      <section>
+        <header>
+          <div>
+            <span>启动前关键回应</span>
+            <strong>先完成这 {startupQuestions.length} 个选择，再启动小镇</strong>
+            <p>这里只收集会影响本轮判断的真实选择；更细的事件证据会在小镇运行后产生。</p>
+          </div>
+          <b>{completedCount}/{startupQuestions.length}</b>
+        </header>
+        <div className="mbti-startup-question-list">
+          {startupQuestions.map((startupQuestion, index) => {
+            const answer = answersByQuestion[index];
+            const note = notesByQuestion[index]?.trim() ?? '';
+            return (
+              <article data-complete={Boolean(answer)} key={`${index}-${startupQuestion.question}`}>
+                <div>
+                  <span>问题 {index + 1}</span>
+                  <strong>{startupQuestion.question}</strong>
+                </div>
+                <div className="mbti-startup-options">
+                  {startupQuestion.options.map((option) => (
+                    <button
+                      className={answer === option ? 'selected' : ''}
+                      key={option}
+                      onClick={() => chooseOption(index, option)}
+                      type="button"
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  onChange={(inputEvent) =>
+                    setNotesByQuestion((current) => ({
+                      ...current,
+                      [index]: inputEvent.target.value,
+                    }))
+                  }
+                  placeholder="可选：补充一个现实条件，例如年龄、回岳阳后的生活安排、不能接受的伴侣特征。"
+                  value={notesByQuestion[index] ?? ''}
+                />
+                {!answer && note && (
+                  <button
+                    className="mbti-startup-custom-answer"
+                    onClick={() => saveCustomAnswer(index)}
+                    type="button"
+                  >
+                    用补充条件作为回答
+                  </button>
+                )}
+                <em>
+                  {answer
+                    ? `已记录：${answer}`
+                    : note
+                    ? '可以直接保存补充条件，或选择一个最接近的选项'
+                    : '请选择一个最接近的真实反应，或填写补充条件'}
+                </em>
+              </article>
+            );
+          })}
+        </div>
+        <footer>
+          <span>{canStart ? '关键回应已完成，可以启动小镇。' : '完成所有关键回应后才能启动。'}</span>
+          <button
+            disabled={!canStart}
+            onClick={async () => {
+              setStarting(true);
+              try {
+                await onStart();
+              } finally {
+                setStarting(false);
+              }
+            }}
+            type="button"
+          >
+            {starting ? '正在启动...' : '启动小镇演化'}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+type StartupQuestion = {
+  question: string;
+  options: string[];
+};
+
 function EventProgressCard({
   event,
+  experimentId,
   matchedBehaviors,
   matchedMessages,
   matchedThoughts,
+  onSubmitUserResponse,
+  onSkipUserResponse,
   participantCount,
   playerNameById,
   recordDescription,
   recordedAt,
   scenarioContext,
   resolutionCriteria,
+  showInlineResponse,
+  userResponse,
 }: {
   event: {
     _id: string;
     title: string;
     description: string;
     status: string;
+    testedVariable?: string;
+    testedHypotheses?: string[];
+    questionLink?: string;
+    informationGoal?: string;
+    expectedSignals?: string[];
+    responseOptions?: string[];
+    residentRoles?: string[];
+    residentParticipationGoal?: string;
+    probeOrigin?: 'initial' | 'adaptive' | 'calibration';
+    adaptiveReason?: string;
   };
+  experimentId?: Id<'mbtiExperiments'>;
   matchedMessages: Array<{
     _id: string;
     author: string;
@@ -1689,16 +2280,59 @@ function EventProgressCard({
     playerId: string;
     text: string;
   }>;
+  onSubmitUserResponse: (args: {
+    experimentId: Id<'mbtiExperiments'>;
+    mbtiEventId: Id<'mbtiEvents'>;
+    selectedOption: string;
+    confidence: number;
+    emotions: string[];
+    freeText: string;
+    scenarioFit: 'fits' | 'partial' | 'not_fit';
+    correctionText?: string;
+  }) => Promise<unknown>;
+  onSkipUserResponse: (args: {
+    experimentId: Id<'mbtiExperiments'>;
+    mbtiEventId: Id<'mbtiEvents'>;
+    reason?: string;
+  }) => Promise<unknown>;
   participantCount: number;
   playerNameById: Map<string, string>;
   recordDescription?: string;
   recordedAt?: number;
   scenarioContext: string;
   resolutionCriteria: string;
+  showInlineResponse: boolean;
+  userResponse?: UserResponse;
 }) {
+  const [selectedOption, setSelectedOption] = useState(userResponse?.selectedOption ?? '');
+  const [confidence, setConfidence] = useState(userResponse?.confidence ?? 4);
+  const [emotionText, setEmotionText] = useState(userResponse?.emotions.join('、') ?? '');
+  const [freeText, setFreeText] = useState(userResponse?.freeText ?? '');
+  const [scenarioFit, setScenarioFit] = useState<'fits' | 'partial' | 'not_fit'>(
+    userResponse?.scenarioFit ?? 'fits',
+  );
+  const [correctionText, setCorrectionText] = useState(userResponse?.correctionText ?? '');
+  const [submitState, setSubmitState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  useEffect(() => {
+    if (!userResponse) {
+      return;
+    }
+    setSelectedOption(userResponse.selectedOption);
+    setConfidence(userResponse.confidence);
+    setEmotionText(userResponse.emotions.join('、'));
+    setFreeText(userResponse.freeText);
+    setScenarioFit(userResponse.scenarioFit);
+    setCorrectionText(userResponse.correctionText ?? '');
+  }, [userResponse]);
   const planned = plannedEventSections(event.description);
+  const displayedVariable = event.testedVariable ?? planned.observationAxis ?? '未写明维度';
+  const displayedQuestionLink = event.questionLink ?? planned.questionLink ?? '把原问题转成可观察的行为反应。';
+  const displayedInformationGoal = event.informationGoal ?? planned.informationGoal ?? '这件事能不能推动真实互动。';
+  const responsePrompt = eventResponsePrompt(planned, event.title);
+  const responseOptions = event.responseOptions?.length ? event.responseOptions : eventResponseOptions(planned, event.title);
   const hasChatEvidence = matchedMessages.length > 0;
   const hasEventRecord = Boolean(recordedAt);
+  const shouldShowUserResponsePanel = showInlineResponse && (hasEventRecord || Boolean(userResponse));
   const hasAuxiliaryEvidence = matchedThoughts.length > 0 || matchedBehaviors.length > 0;
   const hasAnyEvidence = hasChatEvidence || hasAuxiliaryEvidence;
   const expectsConversation = participantCount >= 2;
@@ -1723,7 +2357,7 @@ function EventProgressCard({
         <strong data-triggered={hasEventRecord}>{statusLabel}</strong>
       </header>
       <p className="mbti-event-row-summary">
-        <b>{planned.observationAxis || '未写明维度'}</b>
+        <b>{displayedVariable}</b>
         <span>{planned.trigger || compactText(event.description, 76)}</span>
       </p>
       <div className="mbti-event-card-grid">
@@ -1740,15 +2374,31 @@ function EventProgressCard({
             </div>
             <div>
               <dt>考察维度</dt>
-              <dd>{planned.observationAxis || '系统未写明。'}</dd>
+              <dd>{displayedVariable}</dd>
             </div>
             <div>
               <dt>问题关系</dt>
-              <dd>{planned.questionLink || '把原问题转成可观察的行为反应。'}</dd>
+              <dd>{displayedQuestionLink}</dd>
             </div>
             <div>
               <dt>想看</dt>
-              <dd>{planned.informationGoal || '这件事能不能推动真实互动。'}</dd>
+              <dd>{displayedInformationGoal}</dd>
+            </div>
+            <div>
+              <dt>探针来源</dt>
+              <dd>{probeOriginLabel(event.probeOrigin)}{event.adaptiveReason ? `：${event.adaptiveReason}` : ''}</dd>
+            </div>
+            <div>
+              <dt>居民角色</dt>
+              <dd>{event.residentRoles?.join('、') || '本轮未指定。'}</dd>
+            </div>
+            <div>
+              <dt>居民目标</dt>
+              <dd>{event.residentParticipationGoal || '让居民提供不同立场和现实约束。'}</dd>
+            </div>
+            <div>
+              <dt>预期信号</dt>
+              <dd>{event.expectedSignals?.join('、') || planned.judgmentSignal || '等待用户真实回应。'}</dd>
             </div>
           </dl>
         </section>
@@ -1821,8 +2471,201 @@ function EventProgressCard({
           )}
         </section>
       </div>
+      {shouldShowUserResponsePanel && (
+      <section className="mbti-user-response-panel" data-saved={Boolean(userResponse)}>
+        <header>
+          <b>你的关键回应</b>
+          <span>
+            {userResponse?.responseStatus === 'skipped'
+              ? '已跳过：不会计入真实回应覆盖'
+              : userResponse?.responseStatus === 'expired_to_stage_report'
+              ? '已进入阶段报告：未计入真实回应覆盖'
+              : userResponse
+              ? `已记录：${userResponse.selectedOption} · 确定度 ${userResponse.confidence}/7`
+              : '这一步需要你的真实选择，系统不会替你回答。'}
+          </span>
+        </header>
+        <p className="mbti-response-question">{responsePrompt}</p>
+        <div className="mbti-response-options">
+          {responseOptions.map((option) => (
+            <button
+              className={selectedOption === option ? 'selected' : ''}
+              key={option}
+              onClick={() => {
+                setSelectedOption(option);
+                setSubmitState('idle');
+              }}
+              type="button"
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+        <label>
+          <span>确定程度：{confidence}/7</span>
+          <input
+            max={7}
+            min={1}
+            onChange={(inputEvent) => {
+              setConfidence(Number(inputEvent.target.value));
+              setSubmitState('idle');
+            }}
+            type="range"
+            value={confidence}
+          />
+        </label>
+        <div className="mbti-response-grid">
+          <label>
+            <span>情绪反应</span>
+            <input
+              onChange={(inputEvent) => {
+                setEmotionText(inputEvent.target.value);
+                setSubmitState('idle');
+              }}
+              placeholder="焦虑、兴奋、抗拒、轻松..."
+              value={emotionText}
+            />
+          </label>
+          <label>
+            <span>情境贴合度</span>
+            <select
+              onChange={(inputEvent) => {
+                setScenarioFit(inputEvent.target.value as 'fits' | 'partial' | 'not_fit');
+                setSubmitState('idle');
+              }}
+              value={scenarioFit}
+            >
+              <option value="fits">贴合我的真实情况</option>
+              <option value="partial">部分贴合</option>
+              <option value="not_fit">不太符合</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>原因说明</span>
+          <textarea
+            onChange={(inputEvent) => {
+              setFreeText(inputEvent.target.value);
+              setSubmitState('idle');
+            }}
+            placeholder="写下你为什么会这样选，或者哪个条件会让你改变。"
+            value={freeText}
+          />
+        </label>
+        {scenarioFit !== 'fits' && (
+          <label>
+            <span>修正或现实约束</span>
+            <textarea
+              onChange={(inputEvent) => {
+                setCorrectionText(inputEvent.target.value);
+                setSubmitState('idle');
+              }}
+              placeholder="例如：不是怕风险，而是家里有现金流/合同/照护约束。"
+              value={correctionText}
+            />
+          </label>
+        )}
+        <div className="mbti-response-actions">
+          <button
+            disabled={!experimentId || !selectedOption || submitState === 'saving'}
+            onClick={async () => {
+              if (!experimentId || !selectedOption) {
+                return;
+              }
+              setSubmitState('saving');
+              try {
+                await onSubmitUserResponse({
+                  experimentId,
+                  mbtiEventId: event._id as Id<'mbtiEvents'>,
+                  selectedOption,
+                  confidence,
+                  emotions: emotionText.split(/[、,，\s]+/).map((item) => item.trim()).filter(Boolean),
+                  freeText,
+                  scenarioFit,
+                  correctionText: correctionText || undefined,
+                });
+                setSubmitState('saved');
+              } catch (error) {
+                console.error('Failed to submit MBTI user response', error);
+                setSubmitState('error');
+              }
+            }}
+            type="button"
+          >
+            {submitState === 'saving' ? '保存中...' : userResponse ? '更新回应' : '保存真实回应'}
+          </button>
+          <button
+            disabled={!experimentId || submitState === 'saving'}
+            onClick={async () => {
+              if (!experimentId) {
+                return;
+              }
+              setSubmitState('saving');
+              try {
+                await onSkipUserResponse({
+                  experimentId,
+                  mbtiEventId: event._id as Id<'mbtiEvents'>,
+                  reason: correctionText || freeText || undefined,
+                });
+                setSubmitState('saved');
+              } catch (error) {
+                console.error('Failed to skip MBTI user response', error);
+                setSubmitState('error');
+              }
+            }}
+            type="button"
+          >
+            这个情境不符合我
+          </button>
+          <span>
+            {submitState === 'saved'
+              ? '已保存为真实用户证据'
+              : submitState === 'error'
+              ? '保存失败，请稍后重试'
+              : !selectedOption
+              ? '先选择一个最接近的真实反应'
+              : '保存后会提升报告可信度'}
+          </span>
+        </div>
+      </section>
+      )}
     </article>
   );
+}
+
+function DecisionStateGroup({
+  emptyText,
+  items,
+  title,
+}: {
+  emptyText: string;
+  items: string[];
+  title: string;
+}) {
+  return (
+    <article>
+      <b>{title}</b>
+      {items.length > 0 ? (
+        <ul>
+          {items.slice(0, 4).map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <p>{emptyText}</p>
+      )}
+    </article>
+  );
+}
+
+function probeOriginLabel(origin?: 'initial' | 'adaptive' | 'calibration') {
+  if (origin === 'adaptive') {
+    return '动态探针';
+  }
+  if (origin === 'calibration') {
+    return '校准探针';
+  }
+  return '初始探针';
 }
 
 type ConclusionEvidenceItem = {
@@ -2449,6 +3292,25 @@ function PersonalityAvatar({
   );
 }
 
+function PersonalityStatusCard({
+  code,
+}: {
+  code: string;
+}) {
+  const normalizedCode = normalizePersonalityCode(code);
+  const meta = normalizedCode ? personalityMeta[normalizedCode] : undefined;
+  return (
+    <section className="mbti-status" aria-label="当前人格">
+      <PersonalityAvatar code={code} size="large" />
+      <div className="mbti-status-copy">
+        <span>当前人格</span>
+        <strong className="mbti-code">{normalizedCode ?? code}</strong>
+        <em>{meta?.title ?? '人格画像生成中'}</em>
+      </div>
+    </section>
+  );
+}
+
 function PersonalityChip({ code }: { code?: string }) {
   const normalizedCode = normalizePersonalityCode(code);
   const meta = normalizedCode ? personalityMeta[normalizedCode] : undefined;
@@ -2466,61 +3328,62 @@ function PersonalityChip({ code }: { code?: string }) {
 function RoleEditor({
   value,
   onChange,
+  onRemove,
 }: {
   value: RolePreset;
   onChange: (patch: Partial<RolePreset>) => void;
+  onRemove: () => void;
 }) {
   return (
     <div className="mbti-role-editor">
       <div className="mbti-role-toggle-row">
         <div>
-          <strong>{value.label}预设</strong>
+          <strong>{value.label || '预设角色'}</strong>
           <p className="mbti-role-reason">{value.reason}</p>
         </div>
-        <PersonalityChip code={value.enabled ? value.mbtiCode : undefined} />
-        <label className="mbti-switch">
-          <input
-            checked={value.enabled}
-            type="checkbox"
-            onChange={(event) => onChange({ enabled: event.target.checked })}
-          />
-          <span aria-hidden="true" />
-          <em>{value.enabled ? '启用' : '关闭'}</em>
-        </label>
+        <button aria-label={`删除${value.label || '预设角色'}`} onClick={onRemove} type="button">
+          -
+        </button>
       </div>
       <div className="mbti-role-grid">
         <label>
           角色名称
           <input
-            disabled={!value.enabled}
             value={value.label}
             onChange={(event) => onChange({ label: event.target.value })}
           />
         </label>
         <label>
-          MBTI（可选）
-          <input
-            disabled={!value.enabled}
-            maxLength={4}
-            placeholder="可留空"
+          MBTI 选择
+          <select
             value={value.mbtiCode}
             onChange={(event) => onChange({ mbtiCode: event.target.value.toUpperCase() })}
-          />
+          >
+            <option value="">不指定</option>
+            {personalityCodeOptions.map((code) => (
+              <option key={code} value={code}>
+                {code} · {personalityMeta[code].title}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
-          对应问题里的谁
+          对应身份
           <input
-            disabled={!value.enabled}
-            placeholder="例如：女朋友、伴侣、她、对方"
+            placeholder="例如：伴侣、朋友、同事、父母、前任"
             value={value.mapping}
-            onChange={(event) => onChange({ mapping: event.target.value })}
+            onChange={(event) =>
+              onChange({
+                mapping: event.target.value,
+                role: inferActorRoleFromText(event.target.value),
+              })
+            }
           />
         </label>
       </div>
       <label>
         关系背景
         <textarea
-          disabled={!value.enabled}
           value={value.traits}
           onChange={(event) => onChange({ traits: event.target.value })}
           placeholder="例如：交往半年，最近因为回消息和控制欲吵过几次；她已经积累了一些不满，但仍在意这段关系。"
