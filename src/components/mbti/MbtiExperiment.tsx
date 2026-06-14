@@ -33,6 +33,7 @@ import {
 } from './eventProgress';
 import { settleStaleCreatingEntry } from './historyState';
 import { objectModeHintForQuestion, objectSummaryForQuestion } from './mbtiDisplay';
+import { startupQuestionMaxSelections, toggleStartupOption } from './startupQuestions';
 import { liveTownTimelineNode } from './townClock';
 import './MbtiExperiment.css';
 
@@ -184,6 +185,7 @@ type QuestionFocus = {
   startupQuestions?: Array<{
     question: string;
     options: string[];
+    maxSelections?: number;
   }>;
   outcomeHypotheses?: Array<{
     label: string;
@@ -2740,27 +2742,30 @@ function StartupResponseDialog({
   onStart: (answers: StartupAnswer[]) => Promise<void>;
   startupQuestions: StartupQuestion[];
 }) {
-  const [answersByQuestion, setAnswersByQuestion] = useState<Record<number, string>>({});
+  const [answersByQuestion, setAnswersByQuestion] = useState<Record<number, string[]>>({});
   const [notesByQuestion, setNotesByQuestion] = useState<Record<number, string>>({});
   const [starting, setStarting] = useState(false);
   const answerForQuestion = (index: number) => {
     const note = notesByQuestion[index]?.trim() ?? '';
-    return note ? `补充回答：${note}` : answersByQuestion[index];
+    const selected = answersByQuestion[index] ?? [];
+    return [...selected, ...(note ? [`补充回答：${note}`] : [])].join('、');
   };
   const completedCount = startupQuestions.filter((_, index) => answerForQuestion(index)).length;
   const canStart = !starting;
 
   function chooseOption(questionIndex: number, option: string) {
+    const startupQuestion = startupQuestions[questionIndex];
+    const maxSelections = startupQuestionMaxSelections(startupQuestion);
     setAnswersByQuestion((current) => ({
       ...current,
-      [questionIndex]: option,
+      [questionIndex]: toggleStartupOption(current[questionIndex] ?? [], option, maxSelections),
     }));
   }
 
   function buildStartupAnswers(): StartupAnswer[] {
     const answers: StartupAnswer[] = [];
     startupQuestions.forEach((startupQuestion, index) => {
-      const selectedAnswer = answersByQuestion[index]?.trim() ?? '';
+      const selectedAnswer = (answersByQuestion[index] ?? []).join('、');
       const note = notesByQuestion[index]?.trim() ?? '';
       const answer = selectedAnswer || note;
       if (!answer) {
@@ -2788,19 +2793,22 @@ function StartupResponseDialog({
         </header>
         <div className="mbti-startup-question-list">
           {startupQuestions.map((startupQuestion, index) => {
-            const selectedAnswer = answersByQuestion[index];
+            const selectedAnswers = answersByQuestion[index] ?? [];
             const answer = answerForQuestion(index);
             const note = notesByQuestion[index]?.trim() ?? '';
+            const maxSelections = startupQuestionMaxSelections(startupQuestion);
             return (
               <article data-complete={Boolean(answer)} key={`${index}-${startupQuestion.question}`}>
                 <div>
                   <span>问题 {index + 1}</span>
                   <strong>{startupQuestion.question}</strong>
+                  {maxSelections > 1 && <p>可多选，最多选 {maxSelections} 项。</p>}
                 </div>
                 <div className="mbti-startup-options">
                   {startupQuestion.options.map((option) => (
                     <button
-                      className={selectedAnswer === option && !note ? 'selected' : ''}
+                      aria-pressed={selectedAnswers.includes(option)}
+                      className={selectedAnswers.includes(option) ? 'selected' : ''}
                       key={option}
                       onClick={() => chooseOption(index, option)}
                       type="button"
@@ -2824,6 +2832,8 @@ function StartupResponseDialog({
                     ? `已记录：${compactText(answer, 72)}`
                     : note
                     ? '已使用补充内容作为回答'
+                    : maxSelections > 1
+                    ? `请选择最多 ${maxSelections} 个真实事项，或填写补充条件`
                     : '请选择一个最接近的真实反应，或填写补充条件'}
                 </em>
               </article>
@@ -2859,6 +2869,7 @@ function StartupResponseDialog({
 type StartupQuestion = {
   question: string;
   options: string[];
+  maxSelections?: number;
 };
 
 type StartupAnswer = {

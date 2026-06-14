@@ -1263,6 +1263,10 @@
   align-items: baseline;
 }
 
+.mbti-startup-question-list article > div:first-child p {
+  flex-basis: 100%;
+}
+
 .mbti-startup-question-list article strong {
   color: #172033;
   font-size: 15px;

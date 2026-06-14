@@ -57,6 +57,7 @@ const questionFocusInput = v.object({
   startupQuestions: v.optional(v.array(v.object({
     question: v.string(),
     options: v.array(v.string()),
+    maxSelections: v.optional(v.number()),
   }))),
   outcomeHypotheses: v.optional(v.array(v.object({
     label: v.string(),
@@ -119,6 +120,7 @@ type QuestionFocusInput = {
   startupQuestions?: Array<{
     question: string;
     options: string[];
+    maxSelections?: number;
   }>;
   outcomeHypotheses?: Array<{
     label: string;
@@ -475,6 +477,8 @@ async function planQuestionSkeleton(
           'startupQuestions 必须直白、生活化、能马上回答，必须直接服务用户原问题。',
           'startupQuestions 不能出现“信息不足时的反应、标准构建方式、行动导向、资源评估、情绪稳定性、现实检验能力”等分析术语。',
           'startupQuestions 的选项必须每题不同、具体、互斥，不能使用“稳住基本盘、争取自主、过渡方案”等抽象策略词。',
+          '如果 startupQuestions 问的是“三件事、两件事、几个、哪些、优先级清单”等复数答案，必须设置 maxSelections 为对应数量或 3；选项必须是可组合的具体事项。',
+          '如果问题只让用户选一种倾向，maxSelections 省略或设为 1。',
           '如果用户问题涉及尚未确定的对象或未来关系，不要把对象当成既成事实；问题应先补齐用户真实标准、边界和现实条件。',
         ].join('\n'),
       },
@@ -509,7 +513,7 @@ async function planQuestionSkeleton(
           '  "evidenceTargets": ["3-5 个后续要从聊天/事件/行动中观察的证据方向"],',
           '  "eventBeats": ["3-5 个后续适合转成小镇事件的触发点"],',
           '  "startupQuestions": [',
-          '    { "question": "一句直白生活化问题", "options": ["3-4 个具体回答"] }',
+          '    { "question": "一句直白生活化问题", "options": ["3-4 个具体回答"], "maxSelections": 1 }',
           '  ],',
           '  "outcomeHypotheses": [',
           '    {',
@@ -1106,6 +1110,7 @@ function cleanStartupQuestions(value: unknown, requiredCount: number): QuestionF
       const question = cleanRequiredString(raw.question, 60);
       const options = cleanPlannerList(raw.options, [], 3, 4, 32)
         .filter((option) => !/基本盘|争取自主|过渡方案|信息不足|标准构建|行动导向|资源评估|情绪稳定|现实检验/.test(option));
+      const maxSelections = cleanStartupQuestionMaxSelections(raw.maxSelections, question, options.length);
       if (
         !question ||
         options.length < 3 ||
@@ -1120,11 +1125,30 @@ function cleanStartupQuestions(value: unknown, requiredCount: number): QuestionF
       }
       seenQuestions.add(questionKey);
       seenOptionSets.add(optionKey);
-      return { question, options };
+      return maxSelections > 1 ? { question, options, maxSelections } : { question, options };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .slice(0, requiredCount);
   return questions.length === requiredCount ? questions : undefined;
+}
+
+function cleanStartupQuestionMaxSelections(value: unknown, question: string | undefined, optionCount: number) {
+  const explicit = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : 1;
+  const inferred = inferStartupQuestionMaxSelections(question ?? '');
+  return Math.min(Math.max(explicit, inferred, 1), optionCount);
+}
+
+function inferStartupQuestionMaxSelections(question: string) {
+  if (/三件|三个|3\s*个/.test(question)) {
+    return 3;
+  }
+  if (/两件|两个|2\s*个/.test(question)) {
+    return 2;
+  }
+  if (/几件|几个|哪些|哪几|清单|优先级/.test(question)) {
+    return 3;
+  }
+  return 1;
 }
 
 export function cleanEventPlans(value: unknown, analysisDimensions: string[]): QuestionFocusInput['eventPlans'] {
