@@ -34,7 +34,7 @@ import {
 import { settleStaleCreatingEntry } from './historyState';
 import { objectModeHintForQuestion, objectSummaryForQuestion } from './mbtiDisplay';
 import { startupQuestionMaxSelections, toggleStartupOption } from './startupQuestions';
-import { liveTownTimelineNode } from './townClock';
+import { liveTownTimelineNode, simulatedTownDayMs } from './townClock';
 import './MbtiExperiment.css';
 
 const baseExperimentScales = [
@@ -1533,6 +1533,7 @@ export default function MbtiExperiment() {
 
             <QuestionGuidanceRail
               behaviorEvents={experimentState?.behaviorEvents ?? []}
+              currentTimelineNode={liveTimelineNode}
               eventEvidence={experimentState?.eventEvidence ?? []}
               eventAssessments={experimentState?.eventAssessments ?? []}
               events={experimentState?.events ?? []}
@@ -1549,6 +1550,7 @@ export default function MbtiExperiment() {
               userResponses={experimentState?.userResponses ?? []}
               showInlineResponses={runStatus !== 'awaiting_user_responses'}
               manualCalibrationMode={false}
+              onNudgeTimeline={() => advanceTownTimeline(0)}
             />
 
             <details className="mbti-observe-details">
@@ -2250,6 +2252,7 @@ function ExperimentTownFrame({
 
 function QuestionGuidanceRail({
   behaviorEvents,
+  currentTimelineNode,
   decisionState,
   eventAssessments,
   eventEvidence: persistedEventEvidence,
@@ -2258,6 +2261,7 @@ function QuestionGuidanceRail({
   innerThoughts,
   messages,
   onAssessEvent,
+  onNudgeTimeline,
   onSubmitUserResponse,
   playerDescriptions,
   questionFocus,
@@ -2275,6 +2279,7 @@ function QuestionGuidanceRail({
     mbtiEventId: string;
     playerId: string;
   }>;
+  currentTimelineNode?: TownObservationSummary['timeline'][number];
   decisionState?: DecisionState;
   eventEvidence: Array<{
     _id: string;
@@ -2325,6 +2330,7 @@ function QuestionGuidanceRail({
     experimentId: Id<'mbtiExperiments'>;
     eventId: Id<'mbtiEvents'>;
   }) => Promise<unknown>;
+  onNudgeTimeline?: () => Promise<unknown>;
   onSubmitUserResponse: (args: {
     experimentId: Id<'mbtiExperiments'>;
     mbtiEventId: Id<'mbtiEvents'>;
@@ -2511,6 +2517,29 @@ function QuestionGuidanceRail({
   ).length;
   const runtimeSummary = summarizeEventRuntime(events);
   const nextRuntimeEvent = runtimeSummary.nextTimelineEvent;
+  const nextEventWait = timelineEventWaitState(currentTimelineNode, nextRuntimeEvent);
+  const nudgeAttemptRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!nextEventWait?.due || !nextRuntimeEvent?._id || !onNudgeTimeline || runStatus !== 'running') {
+      return;
+    }
+    const attemptKey = `${nextRuntimeEvent._id}:${currentTimelineNode?.townDay}:${currentTimelineNode?.phase}`;
+    if (nudgeAttemptRef.current === attemptKey) {
+      return;
+    }
+    nudgeAttemptRef.current = attemptKey;
+    void onNudgeTimeline().catch((error) => {
+      console.warn('MBTI timeline nudge failed', error);
+      nudgeAttemptRef.current = null;
+    });
+  }, [
+    currentTimelineNode?.phase,
+    currentTimelineNode?.townDay,
+    nextEventWait?.due,
+    nextRuntimeEvent?._id,
+    onNudgeTimeline,
+    runStatus,
+  ]);
   const resultText = guidanceResultText({
     completed,
     events,
@@ -2606,6 +2635,13 @@ function QuestionGuidanceRail({
                 {eventStatusLabel(nextRuntimeEvent.status)}
               </strong>
               <p>{nextRuntimeEvent.title}</p>
+              {nextEventWait && (
+                <p>
+                  {nextEventWait.due
+                    ? '小镇时间已到，正在自动检查并触发。'
+                    : `当前 ${nextEventWait.currentLabel}，预计还需 ${nextEventWait.remainingLabel}。`}
+                </p>
+              )}
               <p>{eventTimelineReasonText(nextRuntimeEvent.timelineTriggerReason)}</p>
             </>
           ) : (
@@ -2883,6 +2919,7 @@ type TownObservationSummary = {
     timelineEventId: string;
     townDay: number;
     phase: 'morning' | 'afternoon' | 'evening' | 'night';
+    dayProgress?: number;
     scope: 'resident_life' | 'resident_work' | 'relationship' | 'question_probe';
     storyline: string;
     source: string;
@@ -3657,6 +3694,40 @@ function townTimelinePhaseLabel(phase: TownObservationSummary['timeline'][number
     return '傍晚';
   }
   return '夜里';
+}
+
+function timelineEventWaitState(
+  current: TownObservationSummary['timeline'][number] | undefined,
+  event: { scheduledDay?: number; scheduledPhase?: 'morning' | 'afternoon' | 'evening' | 'night' } | undefined,
+) {
+  if (!current || !event || typeof event.scheduledDay !== 'number') {
+    return undefined;
+  }
+  const targetProgress = event.scheduledDay - 1 + phaseProgress(event.scheduledPhase ?? 'morning');
+  const currentProgress = current.townDay - 1 + (current.dayProgress ?? phaseProgress(current.phase));
+  const remainingDays = targetProgress - currentProgress;
+  const remainingMs = remainingDays * simulatedTownDayMs;
+  return {
+    due: remainingMs <= 0,
+    currentLabel: `第 ${current.townDay} 天 · ${townTimelinePhaseLabel(current.phase)}`,
+    remainingLabel: formatTownWaitDuration(Math.max(0, remainingMs)),
+  };
+}
+
+function formatTownWaitDuration(ms: number) {
+  const totalSeconds = Math.ceil(ms / 1000);
+  if (totalSeconds <= 0) {
+    return '不到 1 分钟';
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) {
+    return `${seconds} 秒现实时间`;
+  }
+  if (seconds === 0) {
+    return `${minutes} 分钟现实时间`;
+  }
+  return `${minutes} 分 ${seconds} 秒现实时间`;
 }
 
 function phaseProgress(phase: TownObservationSummary['timeline'][number]['phase']) {
