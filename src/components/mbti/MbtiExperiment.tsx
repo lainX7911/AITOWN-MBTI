@@ -720,6 +720,18 @@ export default function MbtiExperiment() {
     const lagSeconds = Math.round((Date.now() - currentTime) / 1000);
     return lagSeconds > 90 ? `engine ${lagSeconds}s 未推进` : 'engine 正在推进';
   }, [experimentState?.engine, experimentState?.worldStatus]);
+  const topRuntimeSummary = useMemo(
+    () => summarizeEventRuntime(experimentState?.events ?? []),
+    [experimentState?.events],
+  );
+  const topNextEventWait = timelineEventWaitState(liveTimelineNode, topRuntimeSummary.nextTimelineEvent);
+  const timelineRunStatus = timelineRunStatusText({
+    engineHealth,
+    nextEvent: topRuntimeSummary.nextTimelineEvent,
+    wait: topNextEventWait,
+    runStatus,
+    timelineAdvanceState,
+  });
   const submitCalibrationResponse = async (args: Parameters<typeof submitUserResponse>[0]) => {
     return await submitUserResponse(args);
   };
@@ -1380,16 +1392,8 @@ export default function MbtiExperiment() {
               <div className="mbti-timeline-controls" aria-label="小镇时间线自动推进状态">
                 <div className="mbti-timeline-status">
                   <span>时间线自动推进</span>
-                  <strong>
-                    {timelineAdvanceState === 'running'
-                      ? '正在手动推进'
-                      : timelineAdvanceState === 'error'
-                      ? '上次手动推进失败'
-                      : '系统会按小镇节奏自动处理'}
-                  </strong>
-                  <em>
-                    居民生活/事业线会在后台持续推进；用户提问相关事件会在到达合适时间点后自动触发。
-                  </em>
+                  <strong>{timelineRunStatus.title}</strong>
+                  <em>{timelineRunStatus.detail}</em>
                 </div>
                 <details className="mbti-timeline-debug">
                   <summary>调试推进</summary>
@@ -2216,7 +2220,7 @@ function ExperimentTownFrame({
                 game={game}
                 height={height}
                 historicalTime={historicalTime}
-                lockedViewport
+                fitActiveLocations
                 setSelectedElement={setSelectedElement}
                 width={width}
                 worldId={worldId}
@@ -2233,6 +2237,9 @@ function ExperimentTownFrame({
             </span>
           </div>
         )}
+        <div className="mbti-town-map-hint" aria-label="地图操作提示">
+          拖动地图 · 滚轮缩放 · 点击可移动
+        </div>
       </div>
       {!detailsCollapsed && (
         <div className="mbti-aitown-details bg-brown-800 text-brown-100" ref={scrollViewRef}>
@@ -3711,6 +3718,55 @@ function timelineEventWaitState(
     due: remainingMs <= 0,
     currentLabel: `第 ${current.townDay} 天 · ${townTimelinePhaseLabel(current.phase)}`,
     remainingLabel: formatTownWaitDuration(Math.max(0, remainingMs)),
+  };
+}
+
+function timelineRunStatusText(args: {
+  engineHealth: string;
+  nextEvent?: {
+    scheduledDay?: number;
+    scheduledPhase?: 'morning' | 'afternoon' | 'evening' | 'night';
+    status?: string;
+    title?: string;
+  };
+  runStatus: TownRunStatus;
+  timelineAdvanceState: 'idle' | 'running' | 'error';
+  wait?: ReturnType<typeof timelineEventWaitState>;
+}) {
+  if (args.timelineAdvanceState === 'running') {
+    return {
+      title: '正在推进小镇时间线',
+      detail: '系统正在执行一次居民自治或时间线快进，完成后会继续检查用户事件是否到点。',
+    };
+  }
+  if (args.timelineAdvanceState === 'error') {
+    return {
+      title: '上次时间线推进失败',
+      detail: '请检查 Convex 和本地模型服务；居民生活线或事件触发可能没有成功写入。',
+    };
+  }
+  if (args.runStatus !== 'running') {
+    return {
+      title: '当前没有运行中的提问演化',
+      detail: '常驻居民生活线仍可运行；新的用户提问进入后会绑定到小镇时间线。',
+    };
+  }
+  if (args.wait?.due) {
+    return {
+      title: '未停：事件时间已到，正在自动触发',
+      detail: `${args.engineHealth}；系统正在检查下一事件并把它写入小镇互动。`,
+    };
+  }
+  if (args.nextEvent && args.wait) {
+    const eventLabel = args.nextEvent.title ? `“${compactText(args.nextEvent.title, 24)}”` : '下一事件';
+    return {
+      title: `未停：正在等待 ${eventLabel}`,
+      detail: `${args.wait.currentLabel}，还需 ${args.wait.remainingLabel}；期间居民生活/事业线继续推进，事件到点会自动触发。`,
+    };
+  }
+  return {
+    title: '未停：暂无等待事件，正在积累生活线证据',
+    detail: `${args.engineHealth}；当前没有排队事件，系统会在居民生活线推进并出现证据缺口后生成下一件事。`,
   };
 }
 

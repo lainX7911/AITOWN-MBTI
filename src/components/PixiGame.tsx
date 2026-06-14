@@ -30,6 +30,7 @@ export const PixiGame = (props: {
   width: number;
   height: number;
   lockedViewport?: boolean;
+  fitActiveLocations?: boolean;
   activeLocationKey?: string;
   activeLocationKeys?: string[];
   setSelectedElement: SelectElement;
@@ -100,17 +101,17 @@ export const PixiGame = (props: {
   // Zoom on the user’s avatar when it is created
   useEffect(() => {
     if (!viewportRef.current || humanPlayerId === undefined) return;
-    if (props.lockedViewport) return;
+    if (props.lockedViewport || props.fitActiveLocations) return;
 
     const humanPlayer = props.game.world.players.get(humanPlayerId)!;
     viewportRef.current.animate({
       position: new PIXI.Point(humanPlayer.position.x * tileDim, humanPlayer.position.y * tileDim),
       scale: 1.5,
     });
-  }, [humanPlayerId, props.lockedViewport, props.game.world.players, tileDim]);
+  }, [humanPlayerId, props.fitActiveLocations, props.lockedViewport, props.game.world.players, tileDim]);
 
   useEffect(() => {
-    if (!viewportRef.current || !props.lockedViewport) return;
+    if (!viewportRef.current || (!props.lockedViewport && !props.fitActiveLocations)) return;
     const frame = activeFacilityViewportFrame(
       visibleFacilities,
       width,
@@ -124,10 +125,11 @@ export const PixiGame = (props: {
       scale: frame.scale,
       time: 0,
     });
-  }, [height, props.height, props.lockedViewport, props.width, tileDim, visibleFacilities, width]);
+  }, [height, props.fitActiveLocations, props.height, props.lockedViewport, props.width, tileDim, visibleFacilities, width]);
 
   return (
     <PixiViewport
+      key={props.lockedViewport ? 'locked-viewport' : 'interactive-viewport'}
       app={pixiApp}
       screenWidth={props.width}
       screenHeight={props.height}
@@ -162,7 +164,7 @@ export const PixiGame = (props: {
           isViewer={p.id === humanPlayerId}
           onClick={props.setSelectedElement}
           historicalTime={props.historicalTime}
-          displayScale={props.lockedViewport ? 2 : 1}
+          displayScale={props.lockedViewport || props.fitActiveLocations ? 2 : 1}
         />
       ))}
     </PixiViewport>
