@@ -1,6 +1,7 @@
 import {
   compactAutonomyContext,
   fastForwardCalendarFromLatest,
+  simulatedTownNowFromLatest,
   townCalendarFromElapsed,
   selectAutonomyInteraction,
   selectRunnableConversationRequest,
@@ -36,6 +37,25 @@ describe('MBTI town autonomy selection', () => {
       phase: 'morning',
       dayProgress: 0,
       simulatedNow: 1_000_000 + 18 * 15 * 60 * 1000,
+    });
+  });
+
+  test('autonomy clock continues from a fast-forwarded latest timeline node', () => {
+    const now = 2_000_000;
+    const townCreatedAt = now - 60 * 60 * 1000;
+    const simulatedNow = simulatedTownNowFromLatest({
+      latestTimeline: {
+        createdAt: now - 5 * 60 * 1000,
+        townDay: 200,
+        dayProgress: 0,
+      },
+      now,
+      townCreatedAt,
+    });
+
+    expect(townCalendarFromElapsed(simulatedNow - townCreatedAt)).toMatchObject({
+      townDay: 200,
+      phase: 'afternoon',
     });
   });
 

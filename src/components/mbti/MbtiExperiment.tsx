@@ -33,6 +33,7 @@ import {
 } from './eventProgress';
 import { settleStaleCreatingEntry } from './historyState';
 import { objectModeHintForQuestion, objectSummaryForQuestion } from './mbtiDisplay';
+import { liveTownTimelineNode } from './townClock';
 import './MbtiExperiment.css';
 
 const baseExperimentScales = [
@@ -635,6 +636,15 @@ export default function MbtiExperiment() {
   const planStartupQuestions = useAction(api.mbtiTownPlanner.planStartupQuestions);
   const createSceneRequest = useAction(api.mbtiTownPlanner.planAndCreateSceneRequest);
   const defaultTown = useQuery(api.mbtiTown.getDefaultTown);
+  const [townClockNow, setTownClockNow] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = window.setInterval(() => setTownClockNow(Date.now()), 30 * 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+  const liveTimelineNode = useMemo(
+    () => liveTownTimelineNode(defaultTown?.observation?.timeline?.[0], townClockNow),
+    [defaultTown?.observation?.timeline, townClockNow],
+  );
   const observedExperimentId = liveExperimentId ?? activeSession?.experimentId;
   const experimentState = useQuery(
     api.mbti.getExperiment,
@@ -1461,7 +1471,7 @@ export default function MbtiExperiment() {
                     .map((event) => event.locationKey)
                     .filter((key): key is string => Boolean(key))}
                   engineId={experimentState.experiment.engineId}
-                  timelineNode={defaultTown?.observation?.timeline?.[0]}
+                  timelineNode={liveTimelineNode}
                   worldId={experimentState.experiment.worldId}
                 />
               </section>
@@ -3247,6 +3257,9 @@ function EventProgressCard({
       ? '已触发 · 有辅助证据'
       : '已触发 · 等证据'
     : eventStatusLabel(event.status);
+  const eventTownTime = typeof event.scheduledDay === 'number'
+    ? `小镇时间：第 ${event.scheduledDay} 天${event.scheduledPhase ? ` · ${eventTimelinePhaseLabel(event.scheduledPhase)}` : ''}`
+    : undefined;
   useEffect(() => {
     if (!experimentId || !hasEventRecord || !hasAnyEvidence || assessmentCurrent || assessmentRunning || assessmentFailed) {
       return;
@@ -3340,7 +3353,10 @@ function EventProgressCard({
           {hasEventRecord ? (
             <>
               <p className="mbti-event-record-note">
-                {recordedAt ? `触发时间：${new Date(recordedAt).toLocaleString()}` : '已进入事件记录'}
+                {eventTownTime ?? '已进入事件记录'}
+                {recordedAt && (
+                  <small>现实记录：{new Date(recordedAt).toLocaleString()}</small>
+                )}
               </p>
               <EvidenceGroup
                 emptyText={expectsConversation ? '事件后还没有匹配到相关聊天。' : '单人/环境事件不一定产生聊天。'}
@@ -3630,6 +3646,32 @@ function townTimelinePhaseLabel(phase: TownObservationSummary['timeline'][number
     return '傍晚';
   }
   return '夜里';
+}
+
+function phaseProgress(phase: TownObservationSummary['timeline'][number]['phase']) {
+  if (phase === 'afternoon') {
+    return 0.25;
+  }
+  if (phase === 'evening') {
+    return 0.5;
+  }
+  if (phase === 'night') {
+    return 0.75;
+  }
+  return 0;
+}
+
+function phaseFromTownProgress(dayProgress: number): TownObservationSummary['timeline'][number]['phase'] {
+  if (dayProgress < 0.25) {
+    return 'morning';
+  }
+  if (dayProgress < 0.5) {
+    return 'afternoon';
+  }
+  if (dayProgress < 0.75) {
+    return 'evening';
+  }
+  return 'night';
 }
 
 function townTimelineScopeLabel(scope: TownObservationSummary['timeline'][number]['scope']) {

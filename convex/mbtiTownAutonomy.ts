@@ -116,6 +116,26 @@ export function fastForwardCalendarFromLatest(args: {
   };
 }
 
+export function simulatedTownNowFromLatest(args: {
+  latestTimeline?: {
+    createdAt: number;
+    townDay: number;
+    dayProgress: number;
+  };
+  now: number;
+  townCreatedAt: number;
+}) {
+  const wallClockSimulatedNow = args.now;
+  if (!args.latestTimeline) {
+    return wallClockSimulatedNow;
+  }
+  const latestSimulatedNow =
+    args.townCreatedAt +
+    ((args.latestTimeline.townDay - 1) + args.latestTimeline.dayProgress) * SIMULATED_TOWN_DAY_MS;
+  const elapsedSinceLatest = Math.max(0, args.now - args.latestTimeline.createdAt);
+  return Math.max(wallClockSimulatedNow, latestSimulatedNow + elapsedSinceLatest);
+}
+
 export const runAutonomyTick = mutation({
   args: {
     townId: v.optional(v.id('mbtiTownProfiles')),
@@ -334,7 +354,7 @@ async function applyAutonomyTick(
     throw new Error('Seed the default MBTI town before running autonomy.');
   }
 
-  const [residents, relationships, memories, locations] = await Promise.all([
+  const [residents, relationships, memories, locations, latestTimeline] = await Promise.all([
     ctx.db
       .query('mbtiTownResidents')
       .withIndex('town_status', (q) => q.eq('townId', town._id).eq('status', 'active'))
@@ -345,9 +365,25 @@ async function applyAutonomyTick(
       .withIndex('town_status', (q) => q.eq('townId', town._id).eq('status', 'active'))
       .collect(),
     ctx.db.query('mbtiTownLocations').withIndex('town', (q) => q.eq('townId', town._id)).collect(),
+    ctx.db
+      .query('mbtiTownTimelineEvents')
+      .withIndex('town_time', (q) => q.eq('townId', town._id))
+      .order('desc')
+      .first(),
   ]);
+  const tickNow = args.simulatedNow ?? simulatedTownNowFromLatest({
+    latestTimeline: latestTimeline
+      ? {
+        createdAt: latestTimeline.createdAt,
+        townDay: latestTimeline.townDay,
+        dayProgress: latestTimeline.dayProgress,
+      }
+      : undefined,
+    now: Date.now(),
+    townCreatedAt: town.createdAt,
+  });
   const selection = selectAutonomyInteraction({
-    now: args.simulatedNow ?? Date.now(),
+    now: tickNow,
     townCreatedAt: town.createdAt,
     residents,
     relationships,

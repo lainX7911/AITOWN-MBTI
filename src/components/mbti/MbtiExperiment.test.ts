@@ -1,6 +1,7 @@
 import { directEventConclusion } from './eventConclusion';
 import { settleStaleCreatingEntry, StaleHistoryEntry } from './historyState';
 import { activeFacilityViewportFrame } from '../pixiViewportFrame';
+import { liveTownTimelineNode } from './townClock';
 
 describe('MBTI event conclusion', () => {
   test('keeps time-management probes tied to schedule boundaries', () => {
@@ -126,6 +127,23 @@ describe('MBTI history status', () => {
 });
 
 describe('MBTI town viewport', () => {
+  test('advances the visible town clock from the latest persisted timeline node', () => {
+    const node = liveTownTimelineNode(
+      {
+        createdAt: 1_000_000,
+        phase: 'morning' as const,
+        scope: 'relationship' as const,
+        townDay: 200,
+      },
+      1_000_000 + 5 * 60 * 1000,
+    );
+
+    expect(node).toMatchObject({
+      townDay: 200,
+      phase: 'afternoon',
+    });
+  });
+
   test('locked scene viewport scales enough to cover a wide collapsed canvas', () => {
     const frame = activeFacilityViewportFrame(
       [{
