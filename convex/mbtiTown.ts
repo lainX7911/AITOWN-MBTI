@@ -54,6 +54,7 @@ const questionFocus = v.object({
   startupQuestions: v.optional(v.array(v.object({
     question: v.string(),
     options: v.array(v.string()),
+    maxSelections: v.optional(v.number()),
   }))),
   outcomeHypotheses: v.optional(v.array(v.object({
     label: v.string(),
