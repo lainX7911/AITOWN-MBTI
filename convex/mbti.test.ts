@@ -108,12 +108,17 @@ describe('MBTI observation duration', () => {
   test('refills timeline probes only after current probes are closed', () => {
     expect(shouldCreateTimelineGeneratedProbe([
       { status: 'responded', probeOrigin: 'initial' },
-      { status: 'triggered', probeOrigin: 'initial' },
+      { status: 'observed', probeOrigin: 'initial' },
     ] as any)).toBe(true);
 
     expect(shouldCreateTimelineGeneratedProbe([
       { status: 'responded', probeOrigin: 'initial' },
       { status: 'candidate', probeOrigin: 'adaptive' },
+    ] as any)).toBe(false);
+
+    expect(shouldCreateTimelineGeneratedProbe([
+      { status: 'observed', probeOrigin: 'initial' },
+      { status: 'pending_user_response', probeOrigin: 'adaptive' },
     ] as any)).toBe(false);
   });
 

@@ -1529,6 +1529,42 @@ export const insertTimelineGeneratedProbe = internalMutation({
     });
   },
 });
+
+export const ensureNextTimelineProbeAfterEventClosed = internalMutation({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    if (!experiment || experiment.status !== 'running' || !experiment.sceneRequestId) {
+      return { scheduled: false, reason: 'experiment-not-running' };
+    }
+    const sceneRequest = await ctx.db.get(experiment.sceneRequestId);
+    if (!sceneRequest) {
+      return { scheduled: false, reason: 'missing-scene-request' };
+    }
+    const events = await ctx.db
+      .query('mbtiEvents')
+      .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
+      .collect();
+    const latestTimeline = experiment.townId
+      ? await ctx.db
+          .query('mbtiTownTimelineEvents')
+          .withIndex('town_time', (q) => q.eq('townId', experiment.townId!))
+          .order('desc')
+          .first()
+      : null;
+    await ensureNextTimelineGeneratedProbe(ctx, {
+      experiment,
+      sceneRequest,
+      events,
+      townDay: latestTimeline?.townDay ?? 1,
+      phase: latestTimeline?.phase ?? 'morning',
+    });
+    return { scheduled: shouldCreateTimelineGeneratedProbe(events, experiment.observation.targetEventCount ?? 8) };
+  },
+});
+
 export const getTriggeredEventEvidencePayload = internalQuery({
   args: {
     experimentId: v.id('mbtiExperiments'),
@@ -1657,6 +1693,9 @@ export const nudgeTriggeredEventEvidence = internalAction({
           eventId: args.eventId,
           status: 'observed',
         });
+        await ctx.runMutation(internal.mbti.ensureNextTimelineProbeAfterEventClosed, {
+          experimentId: args.experimentId,
+        });
       }
       return { nudged: false, reason: 'not-enough-participants' };
     }
@@ -1693,6 +1732,9 @@ export const nudgeTriggeredEventEvidence = internalAction({
             eventId: args.eventId,
             status: 'observed',
           });
+          await ctx.runMutation(internal.mbti.ensureNextTimelineProbeAfterEventClosed, {
+            experimentId: args.experimentId,
+          });
           return { nudged: true, reason: 'behavior-recorded-without-conversation' };
         }
       }
@@ -1715,6 +1757,13 @@ export const nudgeTriggeredEventEvidence = internalAction({
       message.messageUuid.startsWith(messagePrefix),
     );
     if (existingMessage) {
+      await ctx.runMutation(internal.mbti.updateEventStatus, {
+        eventId: args.eventId,
+        status: 'observed',
+      });
+      await ctx.runMutation(internal.mbti.ensureNextTimelineProbeAfterEventClosed, {
+        experimentId: args.experimentId,
+      });
       return { nudged: false, reason: 'already-has-event-message' };
     }
     const text = await eventConversationText(
@@ -1778,6 +1827,9 @@ export const nudgeTriggeredEventEvidence = internalAction({
     await ctx.runMutation(internal.mbti.updateEventStatus, {
       eventId: args.eventId,
       status: 'observed',
+    });
+    await ctx.runMutation(internal.mbti.ensureNextTimelineProbeAfterEventClosed, {
+      experimentId: args.experimentId,
     });
     await maybeRecordUserEventBehavior(ctx, payload);
     return { nudged: true };
