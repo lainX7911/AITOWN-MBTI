@@ -106,6 +106,9 @@ function sanitizeConversationMessage(
   const professional = isProfessionalContext(context);
   if (!professional) {
     text = normalizeEverydaySpeech(text);
+    if (isSceneRoleContext(context)) {
+      text = normalizeSceneRoleSpeech(text, speakerIdentity);
+    }
     text = firstNaturalSentence(text);
   }
   const maxLength = professional ? 140 : 32;
@@ -113,6 +116,33 @@ function sanitizeConversationMessage(
     text = text.slice(0, maxLength).replace(/[，,；;：:、][^，,；;：:、]*$/, '').trim();
   }
   return text || everydayFallback(speakerIdentity);
+}
+
+function isSceneRoleContext(text: string) {
+  return /本轮临时社会位置|你只知道这些用户信息|你不知道这些信息|允许介入范围/.test(text);
+}
+
+export function normalizeSceneRoleSpeech(text: string, speakerIdentity?: string) {
+  const overKnowingPatterns = [
+    /我观察到.*模式/,
+    /你的模式/,
+    /你的本质/,
+    /你真正需要/,
+    /从人格.*看/,
+    /从你的.*来看/,
+    /我能看出你/,
+    /你内心其实/,
+    /这说明你/,
+    /作为.*(咨询师|观察者|系统|NPC|角色)/,
+  ];
+  if (overKnowingPatterns.some((pattern) => pattern.test(text))) {
+    return everydayFallback(speakerIdentity);
+  }
+  return text
+    .replace(/我观察到/g, '我刚听你说')
+    .replace(/你的模式/g, '这件事')
+    .replace(/你的本质/g, '你在意的点')
+    .replace(/你真正需要/g, '你现在可能要先说清楚');
 }
 
 function mapsPrimaryRelationship(identity?: string) {
@@ -287,6 +317,7 @@ function agentPrompts(
   if (agent) {
     prompt.push(`你的身份设定：${agent.identity}`);
     prompt.push(`你的当前目标：${agent.plan}`);
+    prompt.push(...sceneRoleConversationGuard(agent.identity, 'speaker'));
     if (/人格代码|人格权重|行为倾向/.test(agent.identity)) {
       prompt.push(
         `人格约束：你是用户人格代理，发言必须符合身份设定中的 MBTI 权重和行为倾向。`,
@@ -300,11 +331,37 @@ function agentPrompts(
       `${otherPlayer.name} 的身份设定：${otherAgent.identity}`,
       `注意：上面这张对方角色卡里的“你”指${otherPlayer.name}，不是指你；角色卡里的“我”指名为“我”的实验当事人，不一定是当前对话对象。`,
     );
+    prompt.push(...sceneRoleConversationGuard(otherAgent.identity, 'other'));
     prompt.push(
       `如果当前问题里的“伴侣、女朋友、男朋友、她、他、对方”等称呼对应 ${otherPlayer.name}，你必须把它理解为正在和你聊天的这个人，不要再说成第三者。`,
     );
   }
   return prompt;
+}
+
+export function sceneRoleConversationGuard(identity: string, perspective: 'speaker' | 'other' = 'speaker') {
+  if (!/本轮临时社会位置|你只知道这些用户信息|你不知道这些信息|允许介入范围/.test(identity)) {
+    return [];
+  }
+  const known = extractIdentityLine(identity, /你只知道这些用户信息：([^\n]+)/);
+  const unknown = extractIdentityLine(identity, /你不知道这些信息，不能假装知道：([^\n]+)/);
+  const allowed = extractIdentityLine(identity, /允许介入范围：([^\n]+)/);
+  if (perspective === 'other') {
+    return [
+      `对方有本轮临时社会位置；你只能把它当作对方的有限视角，不要替对方补全动机或让对方知道原题。`,
+    ];
+  }
+  return [
+    `本轮场景说话边界：你不是心理咨询师、主持人、系统旁白或全知 NPC，只是这个小镇里的具体居民。`,
+    known ? `你能主动使用的信息只有：${known}` : `你只能依据眼前对话、你的职业经验和自然观察说话。`,
+    unknown ? `你明确不知道：${unknown}。不能暗示自己知道这些事，也不能替用户下结论。` : '',
+    allowed ? `你允许介入的范围是：${allowed}` : '',
+    `发言方式：一句生活化短句，只问一个具体问题或给一个具体提醒；不要总结人格，不要分析原题，不要说“我观察到/你的模式/本质上/你需要”。`,
+  ].filter(Boolean);
+}
+
+function extractIdentityLine(identity: string, pattern: RegExp) {
+  return identity.match(pattern)?.[1]?.trim().replace(/[。；;]\s*$/, '') ?? '';
 }
 
 function conversationPromptBase(playerName: string, otherPlayerName: string, sceneInstruction: string) {

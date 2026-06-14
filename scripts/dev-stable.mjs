@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -11,6 +11,7 @@ const DEPLOYMENT_NAME = process.env.MBTI_CONVEX_DEPLOYMENT ?? 'local-lainzhoux77
 const STATE_DIR = join(homedir(), '.convex', 'convex-backend-state', DEPLOYMENT_NAME);
 const READY_TIMEOUT_MS = Number(process.env.MBTI_BACKEND_READY_TIMEOUT_MS ?? 120_000);
 const RESTART_DELAY_MS = Number(process.env.MBTI_DEV_RESTART_DELAY_MS ?? 3_000);
+const backendOnly = process.argv.includes('--backend-only');
 
 const children = new Set();
 let shuttingDown = false;
@@ -21,11 +22,44 @@ function log(message, extra) {
 }
 
 async function readConfig() {
+  await ensureLocalConfig();
   const config = JSON.parse(await readFile(join(STATE_DIR, 'config.json'), 'utf8'));
   if (!config?.ports?.cloud || !config?.ports?.site || !config?.backendVersion || !config?.adminKey) {
     throw new Error(`Invalid Convex local config at ${join(STATE_DIR, 'config.json')}`);
   }
   return config;
+}
+
+async function ensureLocalConfig() {
+  const configPath = join(STATE_DIR, 'config.json');
+  if (existsSync(configPath)) {
+    return;
+  }
+  const backendVersion = await latestInstalledBackendVersion();
+  const config = {
+    ports: {
+      cloud: Number(process.env.MBTI_CONVEX_CLOUD_PORT ?? 3210),
+      site: Number(process.env.MBTI_CONVEX_SITE_PORT ?? 3211),
+    },
+    backendVersion,
+    adminKey: process.env.MBTI_CONVEX_ADMIN_KEY ?? 'local-mbti-town-admin-key',
+  };
+  await mkdir(STATE_DIR, { recursive: true });
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  log('created Convex local config', { path: configPath, backendVersion });
+}
+
+async function latestInstalledBackendVersion() {
+  const binariesDir = join(homedir(), '.convex', 'binaries');
+  const entries = await readdir(binariesDir);
+  const versions = entries
+    .filter((entry) => entry.startsWith('precompiled-'))
+    .sort()
+    .reverse();
+  if (versions.length === 0) {
+    throw new Error(`No Convex local backend binary found in ${binariesDir}`);
+  }
+  return versions[0];
 }
 
 async function backendReady(port) {
@@ -146,6 +180,9 @@ async function main() {
     env,
     restart: true,
   });
+  if (backendOnly) {
+    return;
+  }
   spawnManaged('vite', 'npx', ['vite', '--host', '0.0.0.0'], {
     env,
     restart: true,

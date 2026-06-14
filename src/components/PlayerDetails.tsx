@@ -15,7 +15,7 @@ type DetailTab = 'events' | 'profile' | 'thoughts' | 'chat';
 
 const detailTabs: { id: DetailTab; label: string }[] = [
   { id: 'events', label: '事件记录' },
-  { id: 'profile', label: '角色设定' },
+  { id: 'profile', label: '居民简介' },
   { id: 'thoughts', label: '内心独白' },
   { id: 'chat', label: '聊天记录' },
 ];

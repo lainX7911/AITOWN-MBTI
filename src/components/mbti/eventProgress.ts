@@ -5,6 +5,10 @@ export type EventProgressItem = {
   title: string;
   description: string;
   status: EventProgressStatus;
+  probeOrigin?: 'initial' | 'adaptive' | 'calibration';
+  timelineTriggerReason?: string;
+  scheduledDay?: number;
+  scheduledPhase?: 'morning' | 'afternoon' | 'evening' | 'night';
 };
 
 export type EventProgressRecord = {
@@ -24,6 +28,10 @@ export function eventStatusLabel(status: EventProgressStatus) {
   switch (status) {
     case 'seeded':
       return '待触发';
+    case 'candidate':
+      return '备用观察';
+    case 'delayed':
+      return '条件不足';
     case 'moving':
       return '正在进入现场';
     case 'conversation_pending':
@@ -31,13 +39,13 @@ export function eventStatusLabel(status: EventProgressStatus) {
     case 'triggered':
       return '已触发，等证据';
     case 'pending_user_response':
-      return '待你回应';
+      return '可校准';
     case 'observed':
       return '已有证据';
     case 'responded':
-      return '已记录真实回应';
+      return '已记录校准';
     case 'skipped':
-      return '已跳过回应';
+      return '已略过校准';
     case 'expired_to_stage_report':
       return '已转阶段报告';
     case 'resolved':
@@ -47,6 +55,120 @@ export function eventStatusLabel(status: EventProgressStatus) {
     default:
       return status;
   }
+}
+
+export function eventIsTriggeredOrBeyond(status: EventProgressStatus) {
+  return status !== 'seeded' && status !== 'candidate' && status !== 'delayed';
+}
+
+export function eventTimelineReasonText(reason?: string) {
+  if (reason === 'town_life_generated_probe' || reason === 'timeline_probe_after_town_life_progress') {
+    return '居民生活线推进后，系统发现还需要一个新的现实片段继续观察。';
+  }
+  if (reason === 'decision_state_generated_probe') {
+    return '当前答案位置还不够明确，系统追加一个事件来验证关键变量。';
+  }
+  if (reason === 'user_calibration_generated_probe') {
+    return '根据你的校准回答生成，用来修正模拟的“我”和真实边界之间的偏差。';
+  }
+  if (reason === 'opening_probe_after_user_entry') {
+    return '用户入镇后的开场探针，用来建立第一批可观察证据。';
+  }
+  return '由当前小镇状态生成，用来补足还缺失的观察证据。';
+}
+
+export function summarizeEventRuntime(events: EventProgressItem[]) {
+  const originCounts = {
+    initial: 0,
+    timeline: 0,
+    calibration: 0,
+    other: 0,
+  };
+  const statusCounts = {
+    occurred: 0,
+    waitingTimeline: 0,
+    dynamicGenerated: 0,
+  };
+  for (const event of events) {
+    const origin = eventRuntimeOrigin(event);
+    originCounts[origin] += 1;
+    if (eventIsTriggeredOrBeyond(event.status)) {
+      statusCounts.occurred += 1;
+    } else if (event.status === 'candidate' || event.status === 'delayed' || event.status === 'seeded') {
+      statusCounts.waitingTimeline += 1;
+    }
+    if (origin === 'timeline' || origin === 'calibration') {
+      statusCounts.dynamicGenerated += 1;
+    }
+  }
+  const nextTimelineEvent = events
+    .filter((event) => event.status === 'candidate' || event.status === 'delayed' || event.status === 'seeded')
+    .sort(
+      (left, right) =>
+        (left.scheduledDay ?? Number.MAX_SAFE_INTEGER) - (right.scheduledDay ?? Number.MAX_SAFE_INTEGER) ||
+        phaseRank(left.scheduledPhase) - phaseRank(right.scheduledPhase),
+    )[0];
+  return {
+    originCounts,
+    statusCounts,
+    nextTimelineEvent,
+  };
+}
+
+function eventRuntimeOrigin(event: EventProgressItem): keyof ReturnType<typeof emptyOriginCounts> {
+  if (event.probeOrigin === 'calibration' || event.timelineTriggerReason === 'user_calibration_generated_probe') {
+    return 'calibration';
+  }
+  if (
+    event.timelineTriggerReason === 'town_life_generated_probe' ||
+    event.timelineTriggerReason === 'decision_state_generated_probe' ||
+    event.timelineTriggerReason === 'timeline_probe_after_town_life_progress'
+  ) {
+    return 'timeline';
+  }
+  if (event.probeOrigin === 'initial' || event.timelineTriggerReason === 'opening_probe_after_user_entry') {
+    return 'initial';
+  }
+  return 'other';
+}
+
+function emptyOriginCounts() {
+  return {
+    initial: 0,
+    timeline: 0,
+    calibration: 0,
+    other: 0,
+  };
+}
+
+function phaseRank(phase?: EventProgressItem['scheduledPhase']) {
+  const ranks = {
+    morning: 0,
+    afternoon: 1,
+    evening: 2,
+    night: 3,
+  };
+  return phase ? ranks[phase] : 0;
+}
+
+export function shouldShowRuntimeCalibrationControls({
+  hasEventRecord,
+  hasSavedUserResponse,
+  isCalibrationCandidate,
+  manualCalibrationMode,
+}: {
+  hasEventRecord: boolean;
+  hasSavedUserResponse: boolean;
+  isCalibrationCandidate: boolean;
+  manualCalibrationMode: boolean;
+}) {
+  if (!manualCalibrationMode) {
+    return false;
+  }
+  if (hasSavedUserResponse) {
+    return true;
+  }
+  return isCalibrationCandidate && hasEventRecord;
 }
 
 export function compactText(text: string, maxLength: number) {
@@ -92,8 +214,8 @@ export type PlannedEventSections = ReturnType<typeof plannedEventSections>;
 
 export function eventResponsePrompt(planned: PlannedEventSections, title: string) {
   const trigger = planned.trigger || title;
-  const axis = planned.observationAxis || planned.informationGoal || '你的真实选择';
-  return `如果你真的遇到「${compactText(trigger, 42)}」，在“${compactText(axis, 24)}”这个问题上，你最接近哪种反应？`;
+  const axis = planned.observationAxis || planned.informationGoal || '你的真实反应';
+  return `如果小镇里模拟的“我”遇到「${compactText(trigger, 42)}」，在“${compactText(axis, 24)}”这个问题上明显偏离你，你会怎样校准？`;
 }
 
 export function eventResponseOptions(planned: PlannedEventSections, title: string) {
@@ -157,7 +279,7 @@ export function guidanceResultText({
   records: EventProgressRecord[];
   started: boolean;
 }) {
-  const triggeredEvents = events.filter((event) => event.status !== 'seeded').length;
+  const triggeredEvents = events.filter((event) => eventIsTriggeredOrBeyond(event.status)).length;
   const recordsByKey = eventRecordMap(records);
   const evidencedEvents = events.filter((event) => recordsByKey.has(event._id ?? '') || recordsByKey.has(event.title)).length;
   if (completed) {

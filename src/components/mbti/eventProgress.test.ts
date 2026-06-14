@@ -3,21 +3,26 @@ import {
   eventResponseOptions,
   eventResponsePrompt,
   eventStatusLabel,
+  eventTimelineReasonText,
   guidanceResultText,
   plannedEventSections,
   selectEventRelatedMessages,
+  shouldShowRuntimeCalibrationControls,
+  summarizeEventRuntime,
 } from './eventProgress';
 
 describe('MBTI event progress copy', () => {
   test('labels runtime statuses in user-readable Chinese', () => {
     expect(eventStatusLabel('seeded')).toBe('待触发');
+    expect(eventStatusLabel('candidate')).toBe('备用观察');
+    expect(eventStatusLabel('delayed')).toBe('条件不足');
     expect(eventStatusLabel('moving')).toBe('正在进入现场');
     expect(eventStatusLabel('conversation_pending')).toBe('等待相关对话');
     expect(eventStatusLabel('triggered')).toBe('已触发，等证据');
-    expect(eventStatusLabel('pending_user_response')).toBe('待你回应');
+    expect(eventStatusLabel('pending_user_response')).toBe('可校准');
     expect(eventStatusLabel('observed')).toBe('已有证据');
-    expect(eventStatusLabel('responded')).toBe('已记录真实回应');
-    expect(eventStatusLabel('skipped')).toBe('已跳过回应');
+    expect(eventStatusLabel('responded')).toBe('已记录校准');
+    expect(eventStatusLabel('skipped')).toBe('已略过校准');
     expect(eventStatusLabel('expired_to_stage_report')).toBe('已转阶段报告');
     expect(eventStatusLabel('resolved')).toBe('已纳入结论');
     expect(eventStatusLabel('failed')).toBe('触发失败');
@@ -75,6 +80,124 @@ describe('MBTI event progress copy', () => {
     expect(text).toContain('聊天、内心和行为只能挂在这些记录下面');
   });
 
+  test('does not count candidate or delayed probes as triggered events', () => {
+    const text = guidanceResultText({
+      completed: false,
+      started: true,
+      events: [
+        {
+          _id: 'event-1',
+          title: '备用观察',
+          description: '后台观察到的可能扰动。',
+          status: 'candidate',
+        },
+        {
+          _id: 'event-2',
+          title: '延迟扰动',
+          description: '需要等待更合适的现场。',
+          status: 'delayed',
+        },
+        {
+          _id: 'event-3',
+          title: '进入现场',
+          description: '居民对话已经开始承载这个扰动。',
+          status: 'moving',
+        },
+        {
+          _id: 'event-4',
+          title: '未开始',
+          description: '还没进入现场。',
+          status: 'seeded',
+        },
+      ],
+      records: [],
+    });
+
+    expect(text).toContain('已触发 1/4 个计划事件');
+    expect(text).toContain('其中 0 个已进入事件记录');
+  });
+
+  test('summarizes event runtime origin and timeline queue state', () => {
+    const summary = summarizeEventRuntime([
+      {
+        _id: 'event-1',
+        title: '开场',
+        description: '初始规划事件',
+        status: 'triggered',
+        probeOrigin: 'initial',
+        timelineTriggerReason: 'opening_probe_after_user_entry',
+      },
+      {
+        _id: 'event-2',
+        title: '第十天追问',
+        description: '动态事件',
+        status: 'candidate',
+        probeOrigin: 'adaptive',
+        timelineTriggerReason: 'town_life_generated_probe',
+        scheduledDay: 10,
+        scheduledPhase: 'evening',
+      },
+      {
+        _id: 'event-3',
+        title: '校准',
+        description: '用户校准事件',
+        status: 'delayed',
+        probeOrigin: 'calibration',
+        timelineTriggerReason: 'user_calibration_generated_probe',
+        scheduledDay: 12,
+        scheduledPhase: 'morning',
+      },
+    ]);
+
+    expect(summary.originCounts).toEqual({
+      initial: 1,
+      timeline: 1,
+      calibration: 1,
+      other: 0,
+    });
+    expect(summary.statusCounts).toMatchObject({
+      occurred: 1,
+      waitingTimeline: 2,
+      dynamicGenerated: 2,
+    });
+    expect(summary.nextTimelineEvent?.title).toBe('第十天追问');
+    expect(summary.nextTimelineEvent?.scheduledDay).toBe(10);
+  });
+
+  test('explains why a timeline-generated event exists', () => {
+    expect(eventTimelineReasonText('town_life_generated_probe')).toContain('居民生活线');
+    expect(eventTimelineReasonText('decision_state_generated_probe')).toContain('答案位置');
+    expect(eventTimelineReasonText('user_calibration_generated_probe')).toContain('校准');
+    expect(eventTimelineReasonText('opening_probe_after_user_entry')).toContain('入镇');
+  });
+
+  test('hides new runtime calibration choices in the default autonomous town flow', () => {
+    expect(
+      shouldShowRuntimeCalibrationControls({
+        hasEventRecord: true,
+        isCalibrationCandidate: true,
+        manualCalibrationMode: false,
+        hasSavedUserResponse: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowRuntimeCalibrationControls({
+        hasEventRecord: true,
+        isCalibrationCandidate: true,
+        manualCalibrationMode: false,
+        hasSavedUserResponse: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowRuntimeCalibrationControls({
+        hasEventRecord: true,
+        isCalibrationCandidate: true,
+        manualCalibrationMode: true,
+        hasSavedUserResponse: true,
+      }),
+    ).toBe(true);
+  });
+
   test('extracts concrete plan sections for the combined plan and evidence card', () => {
     const sections = plannedEventSections(
       '场景：周末市集 具体事情：伴侣想去热门摊位，我想去安静书店 参与者：我、夏天、朋友 观察维度：行动恢复 问题关联：模拟计划被打断后是否还能继续生活安排 想获得的信息：看我会不会提出折中 可评判信号：若我沉默跟随，说明空间被压缩',
@@ -93,7 +216,8 @@ describe('MBTI event progress copy', () => {
       '场景：公寓走廊 具体事情：关键对象又把约好的沟通推迟，只说以后再聊 参与者：我、关键对象 观察维度：关系边界与沟通意愿 问题关联：测试我面对伴侣模糊回应时是否还愿意继续投入 想获得的信息：看我会直接说清担心还是先退开 可评判信号：表达边界、退开、继续追问',
     );
 
-    expect(eventResponsePrompt(sections, '沟通被推迟')).toContain('如果你真的遇到');
+    expect(eventResponsePrompt(sections, '沟通被推迟')).toContain('模拟的“我”遇到');
+    expect(eventResponsePrompt(sections, '沟通被推迟')).toContain('你会怎样校准');
     expect(eventResponsePrompt(sections, '沟通被推迟')).toContain('关键对象又把约好的沟通推迟');
     expect(eventResponseOptions(sections, '沟通被推迟')).toEqual([
       '我会直接把担心和需求说清楚',

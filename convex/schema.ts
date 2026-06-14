@@ -103,6 +103,32 @@ export default defineSchema({
         personalityFit: v.string(),
         evidence: v.array(v.string()),
         conclusion: v.string(),
+        decisionInsights: v.optional(v.object({
+          why: v.string(),
+          changeConditions: v.string(),
+          stableValue: v.string(),
+          nextValidation: v.string(),
+        })),
+        decisionStructure: v.optional(v.object({
+          surfaceQuestion: v.string(),
+          underlyingDecision: v.string(),
+          decisionDimensions: v.array(v.object({
+            label: v.string(),
+            whyItMatters: v.string(),
+            userBlindSpot: v.optional(v.string()),
+          })),
+          personalityLevers: v.array(v.string()),
+          unknowns: v.array(v.string()),
+          hiddenNeeds: v.array(v.string()),
+          riskBlindspots: v.array(v.string()),
+          possiblePaths: v.array(v.object({
+            label: v.string(),
+            whenLikely: v.string(),
+            possibleResult: v.string(),
+          })),
+          changeConditions: v.array(v.string()),
+          nextValidationQuestions: v.array(v.string()),
+        })),
         answerOptions: v.optional(v.array(v.object({
           label: v.string(),
           probability: v.number(),
@@ -133,6 +159,26 @@ export default defineSchema({
         coreQuestion: v.string(),
         drivingTension: v.string(),
         observationGoal: v.string(),
+        decisionStructure: v.optional(v.object({
+          surfaceQuestion: v.string(),
+          underlyingDecision: v.string(),
+          decisionDimensions: v.array(v.object({
+            label: v.string(),
+            whyItMatters: v.string(),
+            userBlindSpot: v.optional(v.string()),
+          })),
+          personalityLevers: v.array(v.string()),
+          unknowns: v.array(v.string()),
+          hiddenNeeds: v.array(v.string()),
+          riskBlindspots: v.array(v.string()),
+          possiblePaths: v.array(v.object({
+            label: v.string(),
+            whenLikely: v.string(),
+            possibleResult: v.string(),
+          })),
+          changeConditions: v.array(v.string()),
+          nextValidationQuestions: v.array(v.string()),
+        })),
         analysisDimensions: v.optional(v.array(v.string())),
         designRationale: v.optional(v.string()),
         theoreticalBasis: v.optional(v.array(v.string())),
@@ -151,6 +197,7 @@ export default defineSchema({
         eventPlans: v.optional(v.array(v.object({
           title: v.string(),
           severity: v.optional(v.string()),
+          locationKey: v.optional(v.string()),
           scene: v.string(),
           trigger: v.string(),
           participants: v.array(v.string()),
@@ -159,6 +206,17 @@ export default defineSchema({
           informationGoal: v.string(),
           judgmentSignal: v.string(),
           responseOptions: v.optional(v.array(v.string())),
+          stakes: v.optional(v.object({
+            timeCost: v.optional(v.string()),
+            moneyCost: v.optional(v.string()),
+            relationshipCost: v.optional(v.string()),
+            opportunityCost: v.optional(v.string()),
+          })),
+          consequenceOptions: v.optional(v.array(v.object({
+            userAction: v.string(),
+            relationshipDelta: v.string(),
+            unlocks: v.string(),
+          }))),
         }))),
         resolutionCriteria: v.string(),
       }),
@@ -177,11 +235,11 @@ export default defineSchema({
       lastUserCorrection: v.optional(v.string()),
     })),
     agentInputIds: v.array(v.id('inputs')),
-    socialField: v.object({
+    socialField: v.optional(v.object({
       minimumAgents: v.number(),
       createdRoles: v.array(v.string()),
       eventSeed: v.number(),
-    }),
+    })),
   }).index('createdAt', ['createdAt']),
 
   mbtiEvents: defineTable({
@@ -189,6 +247,15 @@ export default defineSchema({
     worldId: v.id('worlds'),
     createdAt: v.number(),
     tickOffset: v.number(),
+    scheduledDay: v.optional(v.number()),
+    scheduledPhase: v.optional(v.union(
+      v.literal('morning'),
+      v.literal('afternoon'),
+      v.literal('evening'),
+      v.literal('night'),
+    )),
+    timelineTriggerReason: v.optional(v.string()),
+    delayReason: v.optional(v.string()),
     kind: v.union(
       v.literal('pressure'),
       v.literal('opportunity'),
@@ -203,8 +270,24 @@ export default defineSchema({
     testedHypotheses: v.optional(v.array(v.string())),
     questionLink: v.optional(v.string()),
     informationGoal: v.optional(v.string()),
+    locationKey: v.optional(v.string()),
+    stagingPoint: v.optional(v.object({
+      x: v.number(),
+      y: v.number(),
+    })),
     expectedSignals: v.optional(v.array(v.string())),
     responseOptions: v.optional(v.array(v.string())),
+    stakes: v.optional(v.object({
+      timeCost: v.optional(v.string()),
+      moneyCost: v.optional(v.string()),
+      relationshipCost: v.optional(v.string()),
+      opportunityCost: v.optional(v.string()),
+    })),
+    consequenceOptions: v.optional(v.array(v.object({
+      userAction: v.string(),
+      relationshipDelta: v.string(),
+      unlocks: v.string(),
+    }))),
     biasDirection: v.optional(v.union(
       v.literal('balanced'),
       v.literal('supporting'),
@@ -220,6 +303,8 @@ export default defineSchema({
     residentParticipationGoal: v.optional(v.string()),
     status: v.union(
       v.literal('seeded'),
+      v.literal('candidate'),
+      v.literal('delayed'),
       v.literal('moving'),
       v.literal('conversation_pending'),
       v.literal('triggered'),
@@ -256,6 +341,31 @@ export default defineSchema({
     .index('world_time', ['worldId', 'createdAt'])
     .index('source', ['worldId', 'kind', 'sourceId']),
 
+  mbtiEventAssessments: defineTable({
+    experimentId: v.id('mbtiExperiments'),
+    mbtiEventId: v.id('mbtiEvents'),
+    worldId: v.id('worlds'),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    generatedAt: v.optional(v.number()),
+    status: v.union(
+      v.literal('pending'),
+      v.literal('running'),
+      v.literal('succeeded'),
+      v.literal('failed'),
+    ),
+    evidenceCount: v.number(),
+    evidenceSignature: v.string(),
+    summary: v.optional(v.string()),
+    inference: v.optional(v.string()),
+    next: v.optional(v.string()),
+    evidenceUsed: v.optional(v.array(v.string())),
+    model: v.optional(v.string()),
+    error: v.optional(v.string()),
+  })
+    .index('experiment_event', ['experimentId', 'mbtiEventId'])
+    .index('world_time', ['worldId', 'updatedAt']),
+
   mbtiUserResponses: defineTable({
     experimentId: v.id('mbtiExperiments'),
     mbtiEventId: v.id('mbtiEvents'),
@@ -270,6 +380,13 @@ export default defineSchema({
       v.literal('partial'),
       v.literal('not_fit'),
     ),
+    feedbackType: v.optional(v.union(
+      v.literal('user_reaction'),
+      v.literal('unrealistic_event'),
+      v.literal('unrealistic_person'),
+      v.literal('hit_real_issue'),
+      v.literal('condition_correction'),
+    )),
     correctionText: v.optional(v.string()),
     responseStatus: v.union(
       v.literal('responded'),
@@ -337,6 +454,18 @@ export default defineSchema({
     status: v.union(v.literal('active'), v.literal('inactive')),
     playerId: v.optional(playerId),
     agentId: v.optional(v.string()),
+    autonomyPlan: v.optional(
+      v.object({
+        updatedAt: v.number(),
+        intent: v.string(),
+        targetLocationKey: v.optional(v.string()),
+        socialAppetite: v.number(),
+        seekResidentKeys: v.array(v.string()),
+        avoidResidentKeys: v.array(v.string()),
+        topicSeed: v.string(),
+        reason: v.string(),
+      }),
+    ),
   })
     .index('town_key', ['townId', 'key'])
     .index('town_status', ['townId', 'status'])
@@ -381,9 +510,98 @@ export default defineSchema({
     staleAt: v.optional(v.number()),
     stalenessReason: v.optional(v.string()),
     sourceSceneRequestId: v.optional(v.id('mbtiSceneRequests')),
+    sourceKind: v.optional(v.union(
+      v.literal('seed'),
+      v.literal('scene'),
+      v.literal('autonomy_tick'),
+      v.literal('user_entry'),
+      v.literal('reflection'),
+    )),
+    sourceReason: v.optional(v.string()),
+    relationshipDelta: v.optional(v.object({
+      relationshipId: v.id('mbtiRelationships'),
+      familiarity: v.number(),
+      trust: v.number(),
+      warmth: v.number(),
+      tension: v.number(),
+      influence: v.number(),
+      reason: v.string(),
+    })),
   })
     .index('town_status', ['townId', 'status'])
     .index('town_kind', ['townId', 'kind'])
+    .index('town_time', ['townId', 'createdAt']),
+
+  mbtiTownTimelineEvents: defineTable({
+    townId: v.id('mbtiTownProfiles'),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    townDay: v.number(),
+    phase: v.union(
+      v.literal('morning'),
+      v.literal('afternoon'),
+      v.literal('evening'),
+      v.literal('night'),
+    ),
+    dayProgress: v.number(),
+    scope: v.union(
+      v.literal('resident_life'),
+      v.literal('resident_work'),
+      v.literal('relationship'),
+      v.literal('question_probe'),
+    ),
+    storyline: v.union(
+      v.literal('public'),
+      v.literal('conflict'),
+      v.literal('favor'),
+      v.literal('rumor'),
+      v.literal('routine'),
+      v.literal('scene'),
+      v.literal('user'),
+    ),
+    source: v.union(
+      v.literal('autonomy_tick'),
+      v.literal('scene'),
+      v.literal('question_probe'),
+      v.literal('reflection'),
+    ),
+    title: v.string(),
+    summary: v.string(),
+    residentKeys: v.array(v.string()),
+    locationKey: v.optional(v.string()),
+    memoryId: v.optional(v.id('mbtiTownMemories')),
+    relationshipId: v.optional(v.id('mbtiRelationships')),
+    sceneRequestId: v.optional(v.id('mbtiSceneRequests')),
+    mbtiEventId: v.optional(v.id('mbtiEvents')),
+    status: v.union(v.literal('active'), v.literal('superseded')),
+  })
+    .index('town_day', ['townId', 'townDay', 'phase'])
+    .index('town_time', ['townId', 'createdAt'])
+    .index('town_scope', ['townId', 'scope', 'createdAt']),
+
+  mbtiTownConversationRequests: defineTable({
+    townId: v.id('mbtiTownProfiles'),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    status: v.union(
+      v.literal('pending'),
+      v.literal('started'),
+      v.literal('skipped'),
+      v.literal('expired'),
+    ),
+    residentKeys: v.array(v.string()),
+    residentNames: v.array(v.string()),
+    locationKey: v.optional(v.string()),
+    topicSeed: v.string(),
+    priority: v.union(v.literal('low'), v.literal('medium'), v.literal('high')),
+    reason: v.string(),
+    sourceMemoryId: v.optional(v.id('mbtiTownMemories')),
+    worldId: v.optional(v.id('worlds')),
+    sceneRequestId: v.optional(v.id('mbtiSceneRequests')),
+    startedAt: v.optional(v.number()),
+    skipReason: v.optional(v.string()),
+  })
+    .index('town_status', ['townId', 'status'])
     .index('town_time', ['townId', 'createdAt']),
 
   mbtiSceneRequests: defineTable({
@@ -406,11 +624,41 @@ export default defineSchema({
     sceneType: v.string(),
     selectedLocationKey: v.string(),
     selectedResidentKeys: v.array(v.string()),
+    sceneResidentRoles: v.optional(v.array(v.object({
+      residentKey: v.string(),
+      relationToUser: v.string(),
+      sceneReason: v.string(),
+      personalStake: v.string(),
+      knowsAboutUser: v.array(v.string()),
+      doesNotKnow: v.array(v.string()),
+      pressureStyle: v.string(),
+      allowedIntervention: v.string(),
+    }))),
     questionFocus: v.optional(
       v.object({
         coreQuestion: v.string(),
         drivingTension: v.string(),
         observationGoal: v.string(),
+        decisionStructure: v.optional(v.object({
+          surfaceQuestion: v.string(),
+          underlyingDecision: v.string(),
+          decisionDimensions: v.array(v.object({
+            label: v.string(),
+            whyItMatters: v.string(),
+            userBlindSpot: v.optional(v.string()),
+          })),
+          personalityLevers: v.array(v.string()),
+          unknowns: v.array(v.string()),
+          hiddenNeeds: v.array(v.string()),
+          riskBlindspots: v.array(v.string()),
+          possiblePaths: v.array(v.object({
+            label: v.string(),
+            whenLikely: v.string(),
+            possibleResult: v.string(),
+          })),
+          changeConditions: v.array(v.string()),
+          nextValidationQuestions: v.array(v.string()),
+        })),
         analysisDimensions: v.optional(v.array(v.string())),
         designRationale: v.optional(v.string()),
         theoreticalBasis: v.optional(v.array(v.string())),
@@ -429,6 +677,7 @@ export default defineSchema({
         eventPlans: v.optional(v.array(v.object({
           title: v.string(),
           severity: v.optional(v.string()),
+          locationKey: v.optional(v.string()),
           scene: v.string(),
           trigger: v.string(),
           participants: v.array(v.string()),
@@ -437,6 +686,17 @@ export default defineSchema({
           informationGoal: v.string(),
           judgmentSignal: v.string(),
           responseOptions: v.optional(v.array(v.string())),
+          stakes: v.optional(v.object({
+            timeCost: v.optional(v.string()),
+            moneyCost: v.optional(v.string()),
+            relationshipCost: v.optional(v.string()),
+            opportunityCost: v.optional(v.string()),
+          })),
+          consequenceOptions: v.optional(v.array(v.object({
+            userAction: v.string(),
+            relationshipDelta: v.string(),
+            unlocks: v.string(),
+          }))),
         }))),
         resolutionCriteria: v.string(),
       }),

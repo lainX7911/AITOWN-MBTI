@@ -160,6 +160,19 @@ export function findRoute(game: Game, now: number, player: Player, destination: 
   return { path: compressPath(densePath), newDestination };
 }
 
+export function canReachExactDestination(
+  game: Game,
+  now: number,
+  player: Player,
+  destination: Point,
+) {
+  if (blocked(game, now, destination, player.id)) {
+    return false;
+  }
+  const route = findRoute(game, now, player, destination);
+  return route !== null && !route.newDestination;
+}
+
 export function blocked(game: Game, now: number, pos: Point, playerId?: GameId<'players'>) {
   const otherPositions = [...game.world.players.values()]
     .filter((p) => p.id !== playerId)

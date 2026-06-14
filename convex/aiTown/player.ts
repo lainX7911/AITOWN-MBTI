@@ -11,7 +11,7 @@ import {
 } from '../constants';
 import { pointsEqual, pathPosition } from '../util/geometry';
 import { Game } from './game';
-import { stopPlayer, findRoute, blocked, movePlayer } from './movement';
+import { stopPlayer, findRoute, blocked, canReachExactDestination, movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
 import { characters } from '../../data/characters';
 import { PlayerDescription } from './playerDescription';
@@ -330,19 +330,20 @@ function tickBackgroundResidentMovement(game: Game, now: number, player: Player)
   if (hasAgent) {
     return;
   }
-  const description = game.playerDescriptions.get(player.id);
-  if (!description?.description.includes('背景居民')) {
-    return;
-  }
 
   const availableDestinations = townDestinations
     .filter(
       ({ point }) => Math.abs(point.x - player.position.x) + Math.abs(point.y - player.position.y) >= 4,
     )
-    .filter(({ point }) => !blocked(game, now, point, player.id));
+    .filter(({ point }) => canReachExactDestination(game, now, player, point));
   const destinations = availableDestinations.length > 0 ? availableDestinations : townDestinations;
-  const destination = destinations[Math.floor(Math.random() * destinations.length)]?.point;
-  if (!destination || blocked(game, now, destination, player.id)) {
+  const startIndex = Math.floor(Math.random() * Math.max(1, destinations.length));
+  const shuffled = [
+    ...destinations.slice(startIndex),
+    ...destinations.slice(0, startIndex),
+  ];
+  const destination = shuffled.find(({ point }) => canReachExactDestination(game, now, player, point))?.point;
+  if (!destination) {
     player.activity = {
       description: '闲逛',
       until: now + 2000 + Math.random() * 3000,

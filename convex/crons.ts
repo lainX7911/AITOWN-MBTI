@@ -22,6 +22,27 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  'mbti town autonomy tick',
+  { minutes: 5 },
+  internal.mbtiTownAutonomy.runAutonomyTickInternal,
+  {},
+);
+
+crons.interval(
+  'mbti town natural conversation',
+  { minutes: 2 },
+  internal.mbtiTownAutonomy.startPendingConversationRequest,
+  {},
+);
+
+crons.interval(
+  'mbti town reflection',
+  { minutes: 10 },
+  internal.mbtiTownAutonomy.consolidateTownReflection,
+  {},
+);
+
 crons.daily('vacuum old entries', { hourUTC: 4, minuteUTC: 20 }, internal.crons.vacuumOldEntries);
 
 export default crons;

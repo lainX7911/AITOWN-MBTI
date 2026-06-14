@@ -2,13 +2,14 @@ import { v } from 'convex/values';
 import { agentId, conversationId, parseGameId, playerId } from './ids';
 import { Player, activity } from './player';
 import { Conversation, conversationInputs } from './conversation';
-import { blocked, movePlayer } from './movement';
+import { blocked, canReachExactDestination, movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
 import { point } from '../util/types';
 import { Descriptions } from '../../data/characters';
 import { AgentDescription } from './agentDescription';
 import { Agent } from './agent';
-import { townDestinations, townRoadPoints } from '../../data/townLayout';
+import { townDestinations, townFacilitySpawnCandidates, townRoadPoints } from '../../data/townLayout';
+import type { Point } from '../util/types';
 
 export const agentInputs = {
   finishRememberConversation: inputHandler({
@@ -158,10 +159,17 @@ export const agentInputs = {
       name: v.string(),
       character: v.string(),
       identity: v.string(),
+      profile: v.optional(v.string()),
       plan: v.string(),
     },
     handler: (game, now, args) => {
-      const playerId = Player.join(game, now, args.name, args.character, args.identity);
+      const playerId = Player.join(
+        game,
+        now,
+        args.name,
+        args.character,
+        args.profile ?? args.identity,
+      );
       const agentId = game.allocId('agents');
       game.world.agents.set(
         agentId,
@@ -191,6 +199,7 @@ export const agentInputs = {
         name: v.string(),
         character: v.string(),
         identity: v.string(),
+        profile: v.optional(v.string()),
         plan: v.string(),
       }),
       sceneLocationKey: v.optional(v.string()),
@@ -199,6 +208,7 @@ export const agentInputs = {
           name: v.string(),
           character: v.string(),
           identity: v.string(),
+          profile: v.optional(v.string()),
           plan: v.string(),
         }),
       ),
@@ -208,6 +218,7 @@ export const agentInputs = {
             name: v.string(),
             character: v.string(),
             identity: v.string(),
+            profile: v.optional(v.string()),
           }),
         ),
       ),
@@ -259,10 +270,6 @@ export const agentInputs = {
         if (agentPlayerIds.has(player.id) || player.pathfinding) {
           continue;
         }
-        const description = game.playerDescriptions.get(player.id);
-        if (!description?.description.includes('背景居民')) {
-          continue;
-        }
         const destination = backgroundDestination(game, player.id, moved);
         if (destination) {
           movePlayer(game, now, player, destination);
@@ -300,13 +307,12 @@ export const agentInputs = {
     args: {
       participantNames: v.array(v.string()),
       locationKey: v.optional(v.string()),
+      stagingPoint: v.optional(point),
       activity,
     },
     handler: (game, now, args) => {
-      const destination =
-        townDestinations.find((item) => item.key === args.locationKey)?.point ??
-        townDestinations.find((item) => item.key === 'square')?.point;
-      if (!destination) {
+      const destinations = mbtiEventDestinationCandidates(args.locationKey, args.stagingPoint);
+      if (destinations.length === 0) {
         return { moved: 0, reason: 'missing-destination' };
       }
       let moved = 0;
@@ -323,12 +329,13 @@ export const agentInputs = {
           conversation.leave(game, now, player);
         }
         const offset = eventDestinationOffset(moved);
+        const baseDestination = destinations[moved % destinations.length] ?? destinations[0];
         const candidate = {
-          x: destination.x + offset.x,
-          y: destination.y + offset.y,
+          x: baseDestination.x + offset.x,
+          y: baseDestination.y + offset.y,
         };
-        const target = blocked(game, now, candidate, player.id) ? destination : candidate;
-        if (!blocked(game, now, target, player.id)) {
+        const target = firstReachableDestination(game, now, player, uniquePoints([candidate, ...destinations]));
+        if (target) {
           movePlayer(game, now, player, target);
           moved++;
         }
@@ -408,12 +415,23 @@ export const agentInputs = {
   }),
 };
 
+export function mbtiEventDestinationCandidates(locationKey?: string, stagingPoint?: Point) {
+  const locationDestination = townDestinations.find((item) => item.key === locationKey)?.point;
+  const squareDestination = townDestinations.find((item) => item.key === 'square')?.point;
+  return [
+    ...(stagingPoint ? [stagingPoint] : []),
+    ...townFacilitySpawnCandidates(locationKey),
+    ...(locationDestination ? [locationDestination] : []),
+    ...(squareDestination ? [squareDestination] : []),
+  ];
+}
+
 function createMbtiAgentInGame(
   game: Parameters<typeof Player.join>[0],
   now: number,
-  args: { name: string; character: string; identity: string; plan: string },
+  args: { name: string; character: string; identity: string; profile?: string; plan: string },
 ) {
-  const playerId = Player.join(game, now, args.name, args.character, args.identity);
+  const playerId = Player.join(game, now, args.name, args.character, args.profile ?? args.identity);
   const agentId = game.allocId('agents');
   game.world.agents.set(
     agentId,
@@ -440,10 +458,10 @@ function createMbtiAgentInGame(
 function createMbtiBackgroundPlayerInGame(
   game: Parameters<typeof Player.join>[0],
   now: number,
-  args: { name: string; character: string; identity: string },
+  args: { name: string; character: string; identity: string; profile?: string },
   index: number,
 ) {
-  const playerId = Player.join(game, now, args.name, args.character, `${args.identity}\n背景居民，不主动参与本次交流。`);
+  const playerId = Player.join(game, now, args.name, args.character, args.profile ?? args.identity);
   const player = game.world.players.get(playerId);
   const destination = backgroundDestination(game, playerId, index);
   if (player && destination) {
@@ -460,6 +478,13 @@ function placeAtSceneAnchor(
 ) {
   const player = game.world.players.get(playerId);
   if (!player) {
+    return;
+  }
+  const layoutCandidates = townFacilitySpawnCandidates(locationKey);
+  const layoutDestination = layoutCandidates.find((candidate) => !blocked(game, now, candidate, player.id));
+  if (layoutDestination) {
+    player.position = layoutDestination;
+    delete player.pathfinding;
     return;
   }
   const anchorsByLocation: Record<string, Array<{ x: number; y: number }>> = {
@@ -575,12 +600,37 @@ function backgroundDestination(
   playerId: ReturnType<typeof Player.join>,
   index: number,
 ) {
+  const player = game.world.players.get(playerId);
+  if (!player) {
+    return undefined;
+  }
   const candidates = townRoadPoints();
   const orderedCandidates = [
     ...candidates.slice(index % candidates.length),
     ...candidates.slice(0, index % candidates.length),
   ];
-  return orderedCandidates.find((candidate) => !blocked(game, Date.now(), candidate, playerId));
+  return firstReachableDestination(game, Date.now(), player, orderedCandidates);
+}
+
+function firstReachableDestination(
+  game: Parameters<typeof Player.join>[0],
+  now: number,
+  player: Player,
+  candidates: Point[],
+) {
+  return candidates.find((candidate) => canReachExactDestination(game, now, player, candidate));
+}
+
+function uniquePoints(points: Point[]) {
+  const seen = new Set<string>();
+  return points.filter((point) => {
+    const key = `${point.x},${point.y}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 const MBTI_FOCUS_CONVERSATION_GRACE_MS = 60 * 1000;

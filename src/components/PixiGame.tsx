@@ -1,7 +1,7 @@
 import * as PIXI from 'pixi.js';
 import { Container, Graphics, Text, useApp } from '@pixi/react';
 import { Player, SelectElement } from './Player.tsx';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { PixiStaticMap } from './PixiStaticMap.tsx';
 import PixiViewport from './PixiViewport.tsx';
 import { Viewport } from 'pixi-viewport';
@@ -14,8 +14,13 @@ import { DebugPath } from './DebugPath.tsx';
 import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
-import { townFacilities } from '../../data/townLayout.ts';
+import {
+  activeTownFacilitiesForScene,
+  activeTownFacilitiesForSceneLocations,
+  townFacilities,
+} from '../../data/townLayout.ts';
 import type { TownFacility } from '../../data/townLayout.ts';
+import { activeFacilityViewportFrame } from './pixiViewportFrame.ts';
 
 export const PixiGame = (props: {
   worldId: Id<'worlds'>;
@@ -25,6 +30,8 @@ export const PixiGame = (props: {
   width: number;
   height: number;
   lockedViewport?: boolean;
+  activeLocationKey?: string;
+  activeLocationKeys?: string[];
   setSelectedElement: SelectElement;
 }) => {
   // PIXI setup.
@@ -84,6 +91,11 @@ export const PixiGame = (props: {
   };
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
+  const activeLocationSignature = props.activeLocationKeys?.join('|') ?? '';
+  const visibleFacilities = useMemo(
+    () => visibleTownFacilities(props.activeLocationKey, props.activeLocationKeys),
+    [activeLocationSignature, props.activeLocationKey],
+  );
 
   // Zoom on the user’s avatar when it is created
   useEffect(() => {
@@ -99,12 +111,20 @@ export const PixiGame = (props: {
 
   useEffect(() => {
     if (!viewportRef.current || !props.lockedViewport) return;
+    const frame = activeFacilityViewportFrame(
+      visibleFacilities,
+      width,
+      height,
+      tileDim,
+      props.width,
+      props.height,
+    );
     viewportRef.current.animate({
-      position: new PIXI.Point((width * tileDim) / 2, (height * tileDim) / 2),
-      scale: 1,
+      position: new PIXI.Point(frame.x, frame.y),
+      scale: frame.scale,
       time: 0,
     });
-  }, [height, props.lockedViewport, tileDim, width]);
+  }, [height, props.height, props.lockedViewport, props.width, tileDim, visibleFacilities, width]);
 
   return (
     <PixiViewport
@@ -122,7 +142,10 @@ export const PixiGame = (props: {
         onpointerup={onMapPointerUp}
         onpointerdown={onMapPointerDown}
       />
-      <TownFacilities tileDim={tileDim} />
+      <TownFacilities
+        facilities={visibleFacilities}
+        tileDim={tileDim}
+      />
       {players.map(
         (p) =>
           // Only show the path for the human player in non-debug mode.
@@ -147,10 +170,16 @@ export const PixiGame = (props: {
 };
 export default PixiGame;
 
-function TownFacilities({ tileDim }: { tileDim: number }) {
+function TownFacilities({
+  facilities,
+  tileDim,
+}: {
+  facilities: TownFacility[];
+  tileDim: number;
+}) {
   return (
     <>
-      {townFacilities.map((facility) => (
+      {facilities.map((facility) => (
         <TownFacilityMarker
           facility={facility}
           key={facility.key}
@@ -160,6 +189,14 @@ function TownFacilities({ tileDim }: { tileDim: number }) {
       ))}
     </>
   );
+}
+
+function visibleTownFacilities(activeLocationKey?: string, activeLocationKeys?: string[]) {
+  return activeLocationKeys?.length
+    ? activeTownFacilitiesForSceneLocations(activeLocationKeys)
+    : activeLocationKey
+    ? activeTownFacilitiesForScene(activeLocationKey)
+    : townFacilities;
 }
 
 function TownFacilityMarker({

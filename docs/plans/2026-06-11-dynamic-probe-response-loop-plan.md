@@ -1,5 +1,12 @@
 # MBTI 小镇动态情境探针与用户回应闭环改造计划
 
+> Direction note, 2026-06-12: This plan is superseded as the main product direction by
+> `2026-06-12-autonomous-living-town-plan.md`. Keep the useful infrastructure here
+> (`eventPlans`, `mbtiEvents`, `mbtiUserResponses`, evidence separation, confidence
+> labels), but do not continue expanding per-event user choice or questionnaire-like
+> response coverage. Runtime user input should become rare calibration at critical
+> uncertainty points.
+
 ## 背景
 
 当前 MBTI 小镇已经具备入镇前问题规划、事件计划、事件触发、证据记录和最终报告能力。现有 `questionFocus.eventPlans` 已经包含观察轴、信息目标和判断信号，说明系统不是从零开始。

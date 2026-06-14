@@ -17,10 +17,12 @@ import { ENGINE_ACTION_DURATION } from './constants';
 import { chatCompletion, getLLMConfig } from './util/llm';
 import { startConversationMessage } from './agent/conversation';
 import * as map from '../data/gentle';
+import { townFacilitySpawnCandidates } from '../data/townLayout';
 
 const MBTI_SCENE_MESSAGE_INTERVAL_MS = 110 * 1000;
 const MBTI_BACKGROUND_WANDER_INTERVAL_MS = 30 * 1000;
 const MBTI_SCENE_EVENT_MIN_GAP_MS = 45 * 1000;
+const MBTI_FINALIZE_AFTER_ALL_EVENTS_DELAY_MS = 10 * 1000;
 const MBTI_TOWN_DAILY_EVENT_INTERVAL_MS = 60 * 1000;
 const MBTI_FOCUS_CONVERSATION_INTERVAL_MS = 75 * 1000;
 const MBTI_RESIDENT_INTERACTION_INTERVAL_MS = 90 * 1000;
@@ -29,7 +31,17 @@ const MBTI_COMPLETED_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 const MBTI_STALE_ACTIVE_RETENTION_MS = 2 * 60 * 60 * 1000;
 const MBTI_RUNTIME_DELETE_GRACE_MS = 30 * 1000;
 const MBTI_DELETE_BATCH_SIZE = 20;
+const INITIAL_TIMELINE_EVENT_COUNT = 2;
 const ensureResidentInteractionRef = makeFunctionReference<'action'>('mbti:ensureResidentInteraction') as any;
+const experimentReadyForFinalReportRef = makeFunctionReference<'query'>('mbti:experimentReadyForFinalReport') as any;
+const finalizeExperimentRef = makeFunctionReference<'action'>('mbti:finalizeExperiment') as any;
+const replaceExperimentReportRef = makeFunctionReference<'mutation'>('mbti:replaceExperimentReport') as any;
+const collectEventAssessmentPayloadRef = makeFunctionReference<'query'>('mbti:collectEventAssessmentPayload') as any;
+const upsertEventAssessmentRef = makeFunctionReference<'mutation'>('mbti:upsertEventAssessment') as any;
+const assessMbtiEventNodeRef = makeFunctionReference<'action'>('mbtiNode:assessMbtiEventNode') as any;
+const buildExperimentReportNodeRef = makeFunctionReference<'action'>('mbtiNode:buildExperimentReportNode') as any;
+const debugLLMNodeRef = makeFunctionReference<'action'>('mbtiNode:debugLLMNode') as any;
+const ensureNextTimelineProbeNodeRef = makeFunctionReference<'action'>('mbtiNode:ensureNextTimelineProbeNode') as any;
 
 const weights = v.object({
   e: v.number(),
@@ -65,6 +77,22 @@ const rolePreset = v.object({
   reason: v.string(),
 });
 
+const eventAssessmentStatus = v.union(
+  v.literal('pending'),
+  v.literal('running'),
+  v.literal('succeeded'),
+  v.literal('failed'),
+);
+
+const eventAssessmentResult = v.object({
+  summary: v.optional(v.string()),
+  inference: v.optional(v.string()),
+  next: v.optional(v.string()),
+  evidenceUsed: v.optional(v.array(v.string())),
+  model: v.optional(v.string()),
+  error: v.optional(v.string()),
+});
+
 const townResident = v.object({
   key: v.string(),
   name: v.string(),
@@ -74,6 +102,16 @@ const townResident = v.object({
   traits: v.array(v.string()),
   background: v.string(),
   context: v.optional(v.string()),
+  sceneRole: v.optional(v.object({
+    residentKey: v.string(),
+    relationToUser: v.string(),
+    sceneReason: v.string(),
+    personalStake: v.string(),
+    knowsAboutUser: v.array(v.string()),
+    doesNotKnow: v.array(v.string()),
+    pressureStyle: v.string(),
+    allowedIntervention: v.string(),
+  })),
   defaultLocationKey: v.string(),
   scheduleTags: v.array(v.string()),
 });
@@ -82,6 +120,26 @@ const questionFocus = v.object({
   coreQuestion: v.string(),
   drivingTension: v.string(),
   observationGoal: v.string(),
+  decisionStructure: v.optional(v.object({
+    surfaceQuestion: v.string(),
+    underlyingDecision: v.string(),
+    decisionDimensions: v.array(v.object({
+      label: v.string(),
+      whyItMatters: v.string(),
+      userBlindSpot: v.optional(v.string()),
+    })),
+    personalityLevers: v.array(v.string()),
+    unknowns: v.array(v.string()),
+    hiddenNeeds: v.array(v.string()),
+    riskBlindspots: v.array(v.string()),
+    possiblePaths: v.array(v.object({
+      label: v.string(),
+      whenLikely: v.string(),
+      possibleResult: v.string(),
+    })),
+    changeConditions: v.array(v.string()),
+    nextValidationQuestions: v.array(v.string()),
+  })),
   analysisDimensions: v.optional(v.array(v.string())),
   designRationale: v.optional(v.string()),
   theoreticalBasis: v.optional(v.array(v.string())),
@@ -100,6 +158,7 @@ const questionFocus = v.object({
   eventPlans: v.optional(v.array(v.object({
     title: v.string(),
     severity: v.optional(v.string()),
+    locationKey: v.optional(v.string()),
     scene: v.string(),
     trigger: v.string(),
     participants: v.array(v.string()),
@@ -108,6 +167,17 @@ const questionFocus = v.object({
     informationGoal: v.string(),
     judgmentSignal: v.string(),
     responseOptions: v.optional(v.array(v.string())),
+    stakes: v.optional(v.object({
+      timeCost: v.optional(v.string()),
+      moneyCost: v.optional(v.string()),
+      relationshipCost: v.optional(v.string()),
+      opportunityCost: v.optional(v.string()),
+    })),
+    consequenceOptions: v.optional(v.array(v.object({
+      userAction: v.string(),
+      relationshipDelta: v.string(),
+      unlocks: v.string(),
+    }))),
   }))),
   resolutionCriteria: v.string(),
 });
@@ -140,14 +210,27 @@ type TownResidentInput = {
   traits: string[];
   background: string;
   context?: string;
+  sceneRole?: SceneResidentRoleInput;
   defaultLocationKey: string;
   scheduleTags: string[];
+};
+
+type SceneResidentRoleInput = {
+  residentKey: string;
+  relationToUser: string;
+  sceneReason: string;
+  personalStake: string;
+  knowsAboutUser: string[];
+  doesNotKnow: string[];
+  pressureStyle: string;
+  allowedIntervention: string;
 };
 
 type QuestionFocusInput = {
   coreQuestion: string;
   drivingTension: string;
   observationGoal: string;
+  decisionStructure?: DecisionStructureInput;
   analysisDimensions?: string[];
   designRationale?: string;
   theoreticalBasis?: string[];
@@ -166,6 +249,7 @@ type QuestionFocusInput = {
   eventPlans?: Array<{
     title: string;
     severity?: string;
+    locationKey?: string;
     scene: string;
     trigger: string;
     participants: string[];
@@ -174,8 +258,44 @@ type QuestionFocusInput = {
     informationGoal: string;
     judgmentSignal: string;
     responseOptions?: string[];
+    stakes?: EventStakesInput;
+    consequenceOptions?: EventConsequenceOptionInput[];
   }>;
   resolutionCriteria: string;
+};
+
+type EventStakesInput = {
+  timeCost?: string;
+  moneyCost?: string;
+  relationshipCost?: string;
+  opportunityCost?: string;
+};
+
+type EventConsequenceOptionInput = {
+  userAction: string;
+  relationshipDelta: string;
+  unlocks: string;
+};
+
+type DecisionStructureInput = {
+  surfaceQuestion: string;
+  underlyingDecision: string;
+  decisionDimensions: Array<{
+    label: string;
+    whyItMatters: string;
+    userBlindSpot?: string;
+  }>;
+  personalityLevers: string[];
+  unknowns: string[];
+  hiddenNeeds: string[];
+  riskBlindspots: string[];
+  possiblePaths: Array<{
+    label: string;
+    whenLikely: string;
+    possibleResult: string;
+  }>;
+  changeConditions: string[];
+  nextValidationQuestions: string[];
 };
 
 type MbtiReport = {
@@ -184,6 +304,13 @@ type MbtiReport = {
   personalityFit: string;
   evidence: string[];
   conclusion: string;
+  decisionInsights?: {
+    why: string;
+    changeConditions: string;
+    stableValue: string;
+    nextValidation: string;
+  };
+  decisionStructure?: DecisionStructureInput;
   answerOptions?: Array<{
     label: string;
     probability: number;
@@ -223,7 +350,11 @@ export const createExperiment = mutation({
   },
   handler: async (ctx, args) => {
     const now = Date.now();
-    const durationMs = normalizeObservationDuration(args.observation.durationMs, args.observation.runCount);
+    const durationMs = normalizeObservationDuration(
+      args.observation.durationMs,
+      args.observation.runCount,
+      args.observation.label,
+    );
     const targetEventCount = normalizeTargetEventCount(args.observation.targetEventCount, durationMs);
     const engineId = await createEngine(ctx);
     const engine = (await ctx.db.get(engineId))!;
@@ -255,23 +386,44 @@ export const createExperiment = mutation({
 
     const enabledRoles = args.rolePresets.filter((role) => role.enabled);
     const socialRoles = buildSocialFieldRoles(enabledRoles);
+    const needsCandidateDate = isFuturePartnerQuestion(args.question) &&
+      !socialRoles.some((role) => isRelationshipRole(role));
+    const candidateDateRoles = needsCandidateDate
+      ? [{
+          label: '意向对象',
+          role: 'candidate',
+          mapping: '相亲对象/意向认识的人/未来共同生活候选人',
+          mbtiCode: '',
+          traits: '这是本次场景里的候选相识对象，不是“我”的现任伴侣，也不继承小镇常驻关系。',
+          reason: '未来择偶问题需要一个本次临时的相亲/意向对象来测试共同生活条件。',
+          enabled: true,
+        }]
+      : [];
+    const sceneSocialRoles = [...socialRoles, ...candidateDateRoles];
     const townResidents = args.townResidents ?? [];
     const townBackgroundResidents = args.townBackgroundResidents ?? [];
     const sceneParticipants = [
-      ...socialRoles.map((role, index) => ({
+      ...sceneSocialRoles.map((role, index) => ({
         name: role.label.trim() || `对象${index + 1}`,
         character: characterForIndex(index),
         identity: buildRoleIdentity(role),
+        profile: buildRoleProfile(role),
         plan: `按你和“我”的真实关系自然相处。`,
       })),
       ...townResidents.map((resident, index) => ({
         name: resident.name,
-        character: characterForIndex(index + socialRoles.length),
+        character: characterForIndex(index + sceneSocialRoles.length),
         identity: buildTownResidentIdentity(resident),
+        profile: buildTownResidentProfile(resident),
         plan: `你今天照常在小镇活动。遇到别人时按自己的性格和关系自然聊天。`,
       })),
     ];
-    const eventSeed = deterministicSeed(args.question, args.profile.code);
+    const eventSeed = deterministicSeed(
+      args.question,
+      args.profile.code,
+      args.sceneRequestId ?? '',
+      String(now),
+    );
     const experimentId = await ctx.db.insert('mbtiExperiments', {
       createdAt: now,
       updatedAt: now,
@@ -295,7 +447,7 @@ export const createExperiment = mutation({
         minimumAgents: Math.max(2, 1 + sceneParticipants.length),
         createdRoles: [
           'self',
-          ...socialRoles.map((role) => role.role),
+          ...sceneSocialRoles.map((role) => role.role),
           ...townResidents.map((resident) => `resident:${resident.key}`),
         ],
         eventSeed,
@@ -306,7 +458,8 @@ export const createExperiment = mutation({
       self: {
         name: '我',
         character: 'f5',
-        identity: buildSelfIdentity(args.question, args.profile, socialRoles, args.questionFocus),
+        identity: buildSelfIdentity(args.question, args.profile, sceneSocialRoles, args.questionFocus),
+        profile: buildSelfProfile(args.question, args.profile.code),
         plan: buildSelfPlan(args.questionFocus),
       },
       sceneLocationKey: args.sceneLocationKey,
@@ -315,15 +468,16 @@ export const createExperiment = mutation({
         name: resident.name,
         character: characterForIndex(index + sceneParticipants.length),
         identity: buildTownResidentIdentity(resident, true),
+        profile: buildTownResidentProfile(resident),
       })),
     });
     const seededEvents = buildSeededEvents(
       args.question,
-      socialRoles,
+      sceneSocialRoles,
       townResidents,
       args.sceneLocationKey,
       eventSeed,
-      targetEventCount,
+      initialTimelineEventCount(targetEventCount),
       args.questionFocus,
     );
     for (const event of seededEvents) {
@@ -332,6 +486,9 @@ export const createExperiment = mutation({
         worldId,
         createdAt: now,
         tickOffset: event.tickOffset,
+        scheduledDay: event.scheduledDay,
+        scheduledPhase: event.scheduledPhase,
+        timelineTriggerReason: event.timelineTriggerReason,
         kind: event.kind,
         title: event.title,
         description: event.description,
@@ -340,8 +497,12 @@ export const createExperiment = mutation({
         testedHypotheses: event.testedHypotheses,
         questionLink: event.questionLink,
         informationGoal: event.informationGoal,
+        locationKey: event.locationKey,
+        stagingPoint: event.stagingPoint,
         expectedSignals: event.expectedSignals,
         responseOptions: event.responseOptions,
+        stakes: event.stakes,
+        consequenceOptions: event.consequenceOptions,
         biasDirection: event.biasDirection,
         probeOrigin: event.probeOrigin,
         ...optionalAdaptiveReason(event),
@@ -417,18 +578,26 @@ async function scheduleExperimentEvolution(
   const durationMs = normalizeObservationDuration(
     experiment.observation.durationMs,
     experiment.observation.runCount,
+    experiment.observation.label,
   );
   const events = await ctx.db
     .query('mbtiEvents')
     .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
     .collect();
-  const eventWindowMs = Math.max(MBTI_SCENE_EVENT_MIN_GAP_MS, durationMs - 45 * 1000);
-  const eventStepMs = Math.max(
-    MBTI_SCENE_EVENT_MIN_GAP_MS,
-    Math.floor(eventWindowMs / Math.max(1, events.length)),
-  );
-  for (const [index, event] of events.entries()) {
-    const triggerDelay = Math.min(durationMs - 15 * 1000, eventStepMs * (index + 1));
+  const townDisturbanceContext = experiment.townId
+    ? await readTownDisturbanceContext(ctx, experiment.townId)
+    : undefined;
+  const disturbancePlan = selectHardScheduledSceneEvents(events, townDisturbanceContext);
+  const scheduledEvents = disturbancePlan.scheduled;
+  for (const event of disturbancePlan.candidates) {
+    await ctx.db.patch(event._id, { status: 'candidate' });
+  }
+  for (const event of disturbancePlan.delayed) {
+    await ctx.db.patch(event._id, { status: 'delayed' });
+  }
+  const triggerDelays = plannedSceneEventTriggerDelays(durationMs, scheduledEvents.length);
+  for (const [index, event] of scheduledEvents.entries()) {
+    const triggerDelay = triggerDelays[index];
     if (triggerDelay > 0) {
       await ctx.scheduler.runAfter(triggerDelay, internal.mbti.triggerSceneEvent, {
         experimentId: experiment._id,
@@ -490,6 +659,369 @@ async function scheduleExperimentEvolution(
   });
 }
 
+type TownDisturbanceContext = {
+  residents: Array<{
+    name: string;
+    role: string;
+    hasAutonomyPlan: boolean;
+  }>;
+  pressurePairs: string[][];
+};
+
+async function readTownDisturbanceContext(
+  ctx: MutationCtx,
+  townId: Id<'mbtiTownProfiles'>,
+): Promise<TownDisturbanceContext> {
+  const [residents, relationships] = await Promise.all([
+    ctx.db
+      .query('mbtiTownResidents')
+      .withIndex('town_status', (q) => q.eq('townId', townId).eq('status', 'active'))
+      .collect(),
+    ctx.db.query('mbtiRelationships').withIndex('town_resident_a', (q) => q.eq('townId', townId)).collect(),
+  ]);
+  const residentByKey = new Map(residents.map((resident) => [resident.key, resident]));
+  return {
+    residents: residents.map((resident) => ({
+      name: resident.name,
+      role: resident.role,
+      hasAutonomyPlan: Boolean(resident.autonomyPlan),
+    })),
+    pressurePairs: relationships
+      .filter((relationship) => relationship.tension >= 60 || relationship.tension > relationship.warmth + 10)
+      .map((relationship) => [
+        residentByKey.get(relationship.residentAKey)?.name ?? relationship.residentAKey,
+        residentByKey.get(relationship.residentBKey)?.name ?? relationship.residentBKey,
+      ]),
+  };
+}
+
+export function selectHardScheduledSceneEvents(
+  events: Doc<'mbtiEvents'>[],
+  townContext?: TownDisturbanceContext,
+): { scheduled: Doc<'mbtiEvents'>[]; candidates: Doc<'mbtiEvents'>[]; delayed: Doc<'mbtiEvents'>[] } {
+  const sorted = [...events].sort((a, b) => a.tickOffset - b.tickOffset || a.createdAt - b.createdAt);
+  const scheduled = sorted.slice(0, 1);
+  return { scheduled, candidates: sorted.slice(1), delayed: [] };
+}
+
+export function selectRunnableTimelineEvents<T extends {
+  _id: unknown;
+  createdAt: number;
+  scheduledDay?: number;
+  scheduledPhase?: TownTimelinePhase;
+  status: string;
+  tickOffset: number;
+}>(
+  events: T[],
+  args: {
+    townDay: number;
+    phase: TownTimelinePhase;
+    limit: number;
+  },
+) {
+  const phaseRank = townPhaseRank(args.phase);
+  return events
+    .filter((event) => event.status === 'candidate' || event.status === 'delayed' || event.status === 'seeded')
+    .filter((event) => {
+      const scheduledDay = event.scheduledDay ?? event.tickOffset;
+      if (scheduledDay > args.townDay) {
+        return false;
+      }
+      if (scheduledDay < args.townDay) {
+        return true;
+      }
+      return townPhaseRank(event.scheduledPhase ?? 'morning') <= phaseRank;
+    })
+    .sort((a, b) =>
+      (a.scheduledDay ?? a.tickOffset) - (b.scheduledDay ?? b.tickOffset) ||
+      townPhaseRank(a.scheduledPhase ?? 'morning') - townPhaseRank(b.scheduledPhase ?? 'morning') ||
+      a.createdAt - b.createdAt,
+    )
+    .slice(0, Math.max(0, args.limit));
+}
+
+type TownTimelinePhase = 'morning' | 'afternoon' | 'evening' | 'night';
+
+const OPEN_TIMELINE_PROBE_STATUSES = new Set([
+  'seeded',
+  'candidate',
+  'delayed',
+  'moving',
+  'conversation_pending',
+  'pending_user_response',
+]);
+
+export function shouldCreateTimelineGeneratedProbe(
+  events: Array<{ status: string; probeOrigin?: string }>,
+  maxProbeCount = 8,
+) {
+  const openProbe = events.some((event) => OPEN_TIMELINE_PROBE_STATUSES.has(event.status));
+  if (openProbe) {
+    return false;
+  }
+  const probeCount = events.filter((event) =>
+    event.probeOrigin === 'initial' ||
+    event.probeOrigin === 'adaptive' ||
+    event.probeOrigin === 'calibration'
+  ).length;
+  return probeCount < maxProbeCount;
+}
+
+export function buildTimelineGeneratedProbeDraft(args: {
+  question: string;
+  questionFocus?: Partial<QuestionFocusInput>;
+  decisionState?: { uncertainVariables?: string[] };
+  existingEventCount: number;
+  existingTestedVariables?: string[];
+  townDay: number;
+  phase: TownTimelinePhase;
+  locationKey?: string;
+  residentNames?: string[];
+}) {
+  const existingVariables = new Set(args.existingTestedVariables ?? []);
+  const focus = args.questionFocus;
+  const decisionDimensions = focus?.decisionStructure?.decisionDimensions?.map((dimension) => dimension.label) ?? [];
+  const targetVariable = [
+    ...(args.decisionState?.uncertainVariables ?? []),
+    ...(focus?.decisionStructure?.unknowns ?? []),
+    ...(focus?.analysisDimensions ?? []),
+    ...decisionDimensions,
+    '真实取舍边界',
+  ].find((variable) => variable && !existingVariables.has(variable)) ?? '真实取舍边界';
+  const schedule = timelineScheduleForEventIndex(args.existingEventCount);
+  const scheduledDay = Math.max(schedule.scheduledDay, args.townDay + 2);
+  const scheduledPhase = schedule.scheduledPhase;
+  const residentNames = (args.residentNames ?? []).filter(Boolean).slice(0, 2);
+  const involvedRoles = ['self', ...residentNames];
+  const locationLabel = args.locationKey ?? 'town';
+  const title = `时间线追问：${compactForPrompt(targetVariable, 18)}`;
+  const responseOptions = [
+    '我坚持原来的选择，但补充边界条件',
+    '我需要先观察现实反馈再决定',
+    '这个新条件会改变我的判断',
+  ];
+  const adaptiveReason = `小镇生活已经推进到第 ${args.townDay} 天 ${townPhaseLabel(args.phase)}，需要把“${targetVariable}”放进新的现实片段继续验证。`;
+  const residentParticipation = residentParticipationForProbe(targetVariable, adaptiveReason, args.existingEventCount);
+  return {
+    tickOffset: 2 + args.existingEventCount * 2,
+    scheduledDay,
+    scheduledPhase,
+    timelineTriggerReason: 'town_life_generated_probe',
+    kind: eventKindForIndex(args.existingEventCount),
+    title,
+    description: [
+      `场景：第 ${args.townDay} 天 ${townPhaseLabel(args.phase)}，小镇生活自然推进到 ${locationLabel}，新的现实条件浮现。`,
+      `地点：${locationLabel}`,
+      `事件强度：中等`,
+      `具体事情：居民把“${targetVariable}”转成一个今天必须处理的选择，要求我说明是否仍坚持原判断。`,
+      `参与者：${involvedRoles.map(displayParticipantName).join('、')}`,
+      `观察维度：${targetVariable}`,
+      `问题关联：${focus?.observationGoal ?? args.question}`,
+      `想获得的信息：${adaptiveReason}`,
+      `可评判信号：用户是否坚持原选择、提出新的条件边界、改选过渡方案或指出问题前提需要重写。`,
+      `用户选项：${responseOptions.join(' / ')}`,
+    ].join(' '),
+    involvedRoles,
+    testedVariable: targetVariable,
+    testedHypotheses: (focus?.outcomeHypotheses ?? []).map((hypothesis) => hypothesis.label).slice(0, 4),
+    questionLink: '由小镇生活时间线动态生成，用来验证当前解释是否仍稳定。',
+    informationGoal: adaptiveReason,
+    locationKey: args.locationKey,
+    stagingPoint: stagingPointForEventLocation(args.locationKey, args.existingEventCount),
+    expectedSignals: ['坚持原选择', '提出条件边界', '改选过渡方案', '指出前提错误'],
+    responseOptions,
+    stakes: inferEventStakes(targetVariable, targetVariable),
+    consequenceOptions: inferConsequenceOptions(responseOptions, targetVariable),
+    biasDirection: 'balanced' as const,
+    probeOrigin: 'adaptive' as const,
+    adaptiveReason,
+    residentRoles: residentNames.length
+      ? residentParticipation.roles.map((role, index) => `${role}：${residentNames[index % residentNames.length]}`)
+      : residentParticipation.roles,
+    residentParticipationGoal: residentParticipation.goal,
+  };
+}
+
+function townPhaseRank(phase: TownTimelinePhase) {
+  const ranks: Record<TownTimelinePhase, number> = {
+    morning: 0,
+    afternoon: 1,
+    evening: 2,
+    night: 3,
+  };
+  return ranks[phase];
+}
+
+function townPhaseLabel(phase: TownTimelinePhase) {
+  const labels: Record<TownTimelinePhase, string> = {
+    morning: '上午',
+    afternoon: '下午',
+    evening: '傍晚',
+    night: '夜晚',
+  };
+  return labels[phase];
+}
+
+export function plannedSceneEventTriggerDelays(durationMs: number, eventCount: number) {
+  if (eventCount <= 0) {
+    return [];
+  }
+  const finalTriggerBoundaryMs = Math.max(1, durationMs - 15 * 1000);
+  const eventWindowMs = Math.max(MBTI_SCENE_EVENT_MIN_GAP_MS, durationMs - 45 * 1000);
+  const eventStepMs = Math.max(
+    MBTI_SCENE_EVENT_MIN_GAP_MS,
+    Math.floor(eventWindowMs / eventCount),
+  );
+  return Array.from({ length: eventCount }, (_, index) => {
+    const triggerDelay = index === 0 ? MBTI_SCENE_EVENT_MIN_GAP_MS : eventStepMs * index;
+    return Math.min(finalTriggerBoundaryMs, triggerDelay);
+  });
+}
+
+export function plannedEventsReadyForFinalReport(
+  events: Array<{ _id: string }>,
+  socialEvents: Array<{ mbtiEventId?: string }>,
+) {
+  if (events.length === 0) {
+    return false;
+  }
+  const eventIdsWithRecords = new Set(
+    socialEvents
+      .map((event) => event.mbtiEventId)
+      .filter((eventId): eventId is string => Boolean(eventId)),
+  );
+  return events.every((event) => eventIdsWithRecords.has(String(event._id)));
+}
+
+export function answerPositionReadiness(
+  events: Array<{ _id: unknown; status?: string; testedVariable?: string }>,
+  socialEvents: Array<{ mbtiEventId?: unknown }>,
+  userResponses: Array<{ mbtiEventId?: unknown; responseStatus?: string }>,
+) {
+  const recordedEventIds = new Set(
+    socialEvents
+      .map((event) => event.mbtiEventId)
+      .filter(Boolean)
+      .map(String),
+  );
+  const respondedEventIds = new Set(
+    userResponses
+      .filter((response) => response.responseStatus === 'responded')
+      .map((response) => response.mbtiEventId)
+      .filter(Boolean)
+      .map(String),
+  );
+  const recordedEvents = events.filter((event) => recordedEventIds.has(String(event._id)));
+  const testedVariables = new Set(
+    recordedEvents
+      .map((event) => event.testedVariable)
+      .filter((variable): variable is string => Boolean(variable)),
+  );
+  const recordedEventCount = recordedEvents.length;
+  const respondedEventCount = respondedEventIds.size;
+  const testedVariableCount = testedVariables.size;
+  const ready = recordedEventCount >= 3 && respondedEventCount >= 2 && testedVariableCount >= 3;
+  return {
+    ready,
+    reason: ready ? 'answer-position-located' : 'answer-position-not-yet-located',
+    recordedEventCount,
+    respondedEventCount,
+    testedVariableCount,
+  };
+}
+
+function isHighSignalProbe(event: Doc<'mbtiEvents'>) {
+  const text = [
+    event.title,
+    event.description,
+    event.testedVariable ?? '',
+    event.informationGoal ?? '',
+    event.expectedSignals?.join(' ') ?? '',
+  ].join(' ');
+  return /重大|高后果|关键|承诺|分开|现金|合同|家庭责任|住处|安全|身份|不可逆|边界|误解|修复/.test(text);
+}
+
+export function disturbanceCandidateScore(
+  event: Doc<'mbtiEvents'>,
+  townContext?: TownDisturbanceContext,
+) {
+  let score = 0;
+  if (isHighSignalProbe(event)) {
+    score += 10;
+  }
+  if (event.probeOrigin === 'adaptive') {
+    score += 4;
+  }
+  if (event.probeOrigin === 'calibration') {
+    score += 6;
+  }
+  score += townLiveStateScore(event, townContext);
+  return score;
+}
+
+function townLiveStateScore(
+  event: Doc<'mbtiEvents'>,
+  townContext?: TownDisturbanceContext,
+) {
+  if (!townContext) {
+    return 0;
+  }
+  const text = eventTownMatchingText(event);
+  let score = 0;
+  for (const resident of townContext.residents) {
+    if (text.includes(resident.name) || text.includes(resident.role)) {
+      score += resident.hasAutonomyPlan ? 8 : 3;
+    }
+  }
+  for (const pair of townContext.pressurePairs) {
+    if (pair.every((name) => text.includes(name))) {
+      score += 10;
+    }
+  }
+  return score;
+}
+
+function eventHasPlausibleTownParticipants(
+  event: Doc<'mbtiEvents'>,
+  townContext?: TownDisturbanceContext,
+) {
+  if (!townContext || !event.residentRoles?.length) {
+    return true;
+  }
+  const roles = event.residentRoles.join(' ');
+  if (/我|用户|访客|伴侣|朋友/.test(roles)) {
+    return true;
+  }
+  return townContext.residents.some(
+    (resident) => roles.includes(resident.name) || roles.includes(resident.role),
+  );
+}
+
+function eventTownMatchingText(event: Doc<'mbtiEvents'>) {
+  return [
+    event.title,
+    event.description,
+    event.residentRoles?.join(' ') ?? '',
+    event.residentParticipationGoal ?? '',
+  ].join(' ');
+}
+
+function initialTimelineEventCount(targetEventCount: number) {
+  return Math.max(1, Math.min(INITIAL_TIMELINE_EVENT_COUNT, targetEventCount));
+}
+
+function dedupeEventsById(events: Doc<'mbtiEvents'>[]) {
+  const seen = new Set<string>();
+  return events.filter((event) => {
+    const id = String(event._id);
+    if (seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+}
+
 export const ensureResidentInteraction: any = internalAction({
   args: {
     experimentId: v.id('mbtiExperiments'),
@@ -503,11 +1035,14 @@ export const ensureResidentInteraction: any = internalAction({
     if (!evidence || evidence.experiment.status !== 'running') {
       return null;
     }
+    const activeAgentPlayerIds = new Set(
+      (evidence.world?.agents ?? []).map((agent: { playerId: string }) => agent.playerId),
+    );
     const residentNames: string[] = evidence.playerDescriptions
       .filter(
-        (description: { description: string }) =>
-          description.description.includes('常驻小镇') &&
-          !description.description.includes('背景居民'),
+        (description: { playerId: string; description: string }) =>
+          activeAgentPlayerIds.has(description.playerId) &&
+          description.description.includes('小镇常驻居民'),
       )
       .map((description: { name: string }) => description.name)
       .filter((name: string) => name !== '我' && name !== args.focusName);
@@ -596,6 +1131,7 @@ export const triggerSceneEvent = internalAction({
       args: {
         participantNames,
         locationKey: payload.locationKey,
+        stagingPoint: payload.stagingPoint,
         activity: travelActivityForSceneEvent(
           payload.event.title,
           payload.locationKey,
@@ -684,8 +1220,13 @@ export const triggerTownDailyEvent = internalAction({
     if (!evidence || evidence.experiment.status !== 'running' || !evidence.world) {
       return null;
     }
+    const agentPlayerIds = new Set(
+      (evidence.world.agents ?? []).map((agent: { playerId: string }) => agent.playerId),
+    );
     const backgroundNames = evidence.playerDescriptions
-      .filter((description: { description: string }) => description.description.includes('背景居民'))
+      .filter((description: { playerId: string; name: string }) =>
+        description.name !== '我' && !agentPlayerIds.has(description.playerId),
+      )
       .map((description: { name: string }) => description.name);
     const selectedNames = selectDailyEventParticipants(backgroundNames, args.attempt);
     const dailyEvent = dailyTownEvent(args.attempt);
@@ -732,17 +1273,226 @@ export const getSceneEventPayload = internalQuery({
       !experiment ||
       !event ||
       experiment.status !== 'running' ||
-      !['seeded', 'moving', 'conversation_pending'].includes(event.status)
+      !['seeded', 'candidate', 'delayed', 'moving', 'conversation_pending'].includes(event.status)
     ) {
       return null;
     }
     const sceneRequest = experiment.sceneRequestId
       ? await ctx.db.get(experiment.sceneRequestId)
       : null;
-    return { experiment, event, locationKey: sceneRequest?.selectedLocationKey };
+    return {
+      experiment,
+      event,
+      locationKey: event.locationKey ?? sceneRequest?.selectedLocationKey,
+      stagingPoint: event.stagingPoint,
+    };
   },
 });
 
+export const triggerRunnableTimelineEvents = internalMutation({
+  args: {
+    townId: v.id('mbtiTownProfiles'),
+    townDay: v.number(),
+    phase: v.union(
+      v.literal('morning'),
+      v.literal('afternoon'),
+      v.literal('evening'),
+      v.literal('night'),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const sceneRequests = await ctx.db
+      .query('mbtiSceneRequests')
+      .withIndex('town_status', (q) => q.eq('townId', args.townId).eq('status', 'running'))
+      .collect();
+    const triggered: Array<Id<'mbtiEvents'>> = [];
+    for (const sceneRequest of sceneRequests) {
+      if (!sceneRequest.experimentId) {
+        continue;
+      }
+      const experiment = await ctx.db.get(sceneRequest.experimentId);
+      if (!experiment || experiment.status !== 'running') {
+        continue;
+      }
+      const events = await ctx.db
+        .query('mbtiEvents')
+        .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
+        .collect();
+      const [event] = selectRunnableTimelineEvents(events, {
+        townDay: args.townDay,
+        phase: args.phase,
+        limit: 1,
+      });
+      if (!event) {
+        await ensureNextTimelineGeneratedProbe(ctx, {
+          experiment,
+          sceneRequest,
+          events,
+          townDay: args.townDay,
+          phase: args.phase,
+        });
+        continue;
+      }
+      await ctx.db.patch(event._id, {
+        status: 'seeded',
+        delayReason: undefined,
+      });
+      await ctx.scheduler.runAfter(0, internal.mbti.triggerSceneEvent, {
+        experimentId: experiment._id,
+        eventId: event._id,
+      });
+      triggered.push(event._id);
+      await ensureNextTimelineGeneratedProbe(ctx, {
+        experiment,
+        sceneRequest,
+        events: events.map((existingEvent) =>
+          existingEvent._id === event._id
+            ? { ...existingEvent, status: 'seeded' as const }
+            : existingEvent,
+        ),
+        townDay: args.townDay,
+        phase: args.phase,
+      });
+    }
+    return { triggered };
+  },
+});
+
+async function ensureNextTimelineGeneratedProbe(
+  ctx: MutationCtx,
+  args: {
+    experiment: Doc<'mbtiExperiments'>;
+    sceneRequest: Doc<'mbtiSceneRequests'>;
+    events: Doc<'mbtiEvents'>[];
+    townDay: number;
+    phase: TownTimelinePhase;
+  },
+) {
+  const targetEventCount = args.experiment.observation.targetEventCount ?? 8;
+  if (!shouldCreateTimelineGeneratedProbe(args.events, targetEventCount)) {
+    return;
+  }
+  await ctx.scheduler.runAfter(0, ensureNextTimelineProbeNodeRef, {
+    experimentId: args.experiment._id,
+    townDay: args.townDay,
+    phase: args.phase,
+  });
+}
+
+export const collectTimelineProbeGenerationPayload = internalQuery({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+    townDay: v.number(),
+    phase: v.union(
+      v.literal('morning'),
+      v.literal('afternoon'),
+      v.literal('evening'),
+      v.literal('night'),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    if (!experiment || experiment.status !== 'running' || !experiment.sceneRequestId) {
+      return null;
+    }
+    const sceneRequest = await ctx.db.get(experiment.sceneRequestId);
+    if (!sceneRequest) {
+      return null;
+    }
+    const events = await ctx.db
+      .query('mbtiEvents')
+      .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
+      .collect();
+    const targetEventCount = experiment.observation.targetEventCount ?? 8;
+    if (!shouldCreateTimelineGeneratedProbe(events, targetEventCount)) {
+      return { shouldCreate: false };
+    }
+    const residents = experiment.townId
+      ? await ctx.db
+          .query('mbtiTownResidents')
+          .withIndex('town_status', (q) => q.eq('townId', experiment.townId!).eq('status', 'active'))
+          .collect()
+      : [];
+    const residentNames = sceneRequest.selectedResidentKeys
+      .map((key) => residents.find((resident) => resident.key === key)?.name)
+      .filter((name): name is string => Boolean(name))
+      .slice(0, 2);
+    const timelineEvents = experiment.townId
+      ? await ctx.db
+          .query('mbtiTownTimelineEvents')
+          .withIndex('town_time', (q) => q.eq('townId', experiment.townId!))
+          .order('desc')
+          .take(8)
+      : [];
+    return {
+      shouldCreate: true,
+      experiment,
+      sceneRequest,
+      events,
+      residentNames,
+      timelineEvents: timelineEvents.map((event) => ({
+        townDay: event.townDay,
+        phase: event.phase,
+        scope: event.scope,
+        title: event.title,
+        summary: event.summary,
+        locationKey: event.locationKey,
+      })),
+      townDay: args.townDay,
+      phase: args.phase,
+    };
+  },
+});
+
+export const insertTimelineGeneratedProbe = internalMutation({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+    draft: v.any(),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    if (!experiment || experiment.status !== 'running') {
+      return null;
+    }
+    const events = await ctx.db
+      .query('mbtiEvents')
+      .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
+      .collect();
+    if (!shouldCreateTimelineGeneratedProbe(events, experiment.observation.targetEventCount ?? 8)) {
+      return null;
+    }
+    const draft = args.draft;
+    return await ctx.db.insert('mbtiEvents', {
+      experimentId: experiment._id,
+      worldId: experiment.worldId,
+      createdAt: Date.now(),
+      tickOffset: draft.tickOffset,
+      scheduledDay: draft.scheduledDay,
+      scheduledPhase: draft.scheduledPhase,
+      timelineTriggerReason: draft.timelineTriggerReason,
+      kind: draft.kind,
+      title: draft.title,
+      description: draft.description,
+      involvedRoles: draft.involvedRoles,
+      testedVariable: draft.testedVariable,
+      testedHypotheses: draft.testedHypotheses,
+      questionLink: draft.questionLink,
+      informationGoal: draft.informationGoal,
+      locationKey: draft.locationKey,
+      stagingPoint: draft.stagingPoint,
+      expectedSignals: draft.expectedSignals,
+      responseOptions: draft.responseOptions,
+      stakes: draft.stakes,
+      consequenceOptions: draft.consequenceOptions,
+      biasDirection: draft.biasDirection,
+      probeOrigin: draft.probeOrigin,
+      adaptiveReason: draft.adaptiveReason,
+      residentRoles: draft.residentRoles,
+      residentParticipationGoal: draft.residentParticipationGoal,
+      status: 'candidate',
+    });
+  },
+});
 export const getTriggeredEventEvidencePayload = internalQuery({
   args: {
     experimentId: v.id('mbtiExperiments'),
@@ -826,6 +1576,22 @@ export const recordTriggeredSceneEvent = internalMutation({
       summary: args.title,
       reason: '事件已真实触发并写入小镇事件记录。',
     });
+    const experiment = await ctx.db.get(args.experimentId);
+    if (experiment?.status === 'running') {
+      const events = await ctx.db
+        .query('mbtiEvents')
+        .withIndex('experimentId', (q) => q.eq('experimentId', args.experimentId))
+        .collect();
+      const socialEvents = await ctx.db
+        .query('socialEvents')
+        .withIndex('by_world_time', (q) => q.eq('worldId', args.worldId))
+        .collect();
+      if (plannedEventsReadyForFinalReport(events, socialEvents)) {
+        await ctx.scheduler.runAfter(MBTI_FINALIZE_AFTER_ALL_EVENTS_DELAY_MS, internal.mbti.finalizeExperiment, {
+          experimentId: args.experimentId,
+        });
+      }
+    }
   },
 });
 
@@ -904,7 +1670,7 @@ export const nudgeTriggeredEventEvidence = internalAction({
       ?? conversationParticipantIds.find((id: string) => id !== sceneSpeakerId)
       ?? conversationParticipantIds[1];
     const messagePrefix = `mbti-event-${args.eventId}-`;
-    const existingMessage = payload.messages.find((message) =>
+    const existingMessage = payload.messages.find((message: Doc<'messages'>) =>
       message.conversationId === conversation.id &&
       message.messageUuid.startsWith(messagePrefix),
     );
@@ -1180,6 +1946,8 @@ export const updateEventStatus = internalMutation({
     eventId: v.id('mbtiEvents'),
     status: v.union(
       v.literal('seeded'),
+      v.literal('candidate'),
+      v.literal('delayed'),
       v.literal('moving'),
       v.literal('conversation_pending'),
       v.literal('triggered'),
@@ -1278,6 +2046,176 @@ async function recordEventEvidenceDoc(
     reason: args.reason,
   });
   return { inserted: true, evidenceId };
+}
+
+export const collectEventAssessmentPayload = internalQuery({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+    eventId: v.id('mbtiEvents'),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    const event = await ctx.db.get(args.eventId);
+    if (!experiment || !event || event.experimentId !== experiment._id) {
+      return null;
+    }
+    const evidence = await ctx.db
+      .query('mbtiEventEvidence')
+      .withIndex('experiment_event', (q) =>
+        q.eq('experimentId', args.experimentId).eq('mbtiEventId', args.eventId),
+      )
+      .collect();
+    const behaviorEvents = await ctx.db
+      .query('mbtiBehaviorEvents')
+      .withIndex('experiment_event', (q) =>
+        q.eq('experimentId', args.experimentId).eq('mbtiEventId', args.eventId),
+      )
+      .collect();
+    const userResponses = await ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_event', (q) =>
+        q.eq('experimentId', args.experimentId).eq('mbtiEventId', args.eventId),
+      )
+      .collect();
+    const existingAssessment = await ctx.db
+      .query('mbtiEventAssessments')
+      .withIndex('experiment_event', (q) =>
+        q.eq('experimentId', args.experimentId).eq('mbtiEventId', args.eventId),
+      )
+      .first();
+    const sortedEvidence = [...evidence].sort((a, b) => (a.occurredAt - b.occurredAt) || a._id.localeCompare(b._id));
+    const sortedBehaviors = [...behaviorEvents].sort((a, b) => a.createdAt - b.createdAt);
+    const evidenceSignature = [
+      ...sortedEvidence.map((item) => `${item._id}:${item.kind}:${item.summary}`),
+      ...sortedBehaviors.map((item) => `${item._id}:behavior_event:${item.description}`),
+      ...userResponses.map((item) => `${item._id}:user_response:${item.selectedOption}:${item.freeText}:${item.correctionText ?? ''}`),
+    ].join('|');
+    return {
+      experiment,
+      event,
+      evidence: sortedEvidence,
+      behaviorEvents: sortedBehaviors,
+      userResponses,
+      existingAssessment,
+      evidenceCount: sortedEvidence.length + sortedBehaviors.length + userResponses.length,
+      evidenceSignature,
+    };
+  },
+});
+
+export const upsertEventAssessment = internalMutation({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+    eventId: v.id('mbtiEvents'),
+    worldId: v.id('worlds'),
+    status: eventAssessmentStatus,
+    evidenceCount: v.number(),
+    evidenceSignature: v.string(),
+    result: v.optional(eventAssessmentResult),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query('mbtiEventAssessments')
+      .withIndex('experiment_event', (q) =>
+        q.eq('experimentId', args.experimentId).eq('mbtiEventId', args.eventId),
+      )
+      .first();
+    const patch = {
+      updatedAt: now,
+      generatedAt: args.status === 'succeeded' ? now : undefined,
+      status: args.status,
+      evidenceCount: args.evidenceCount,
+      evidenceSignature: args.evidenceSignature,
+      summary: args.result?.summary,
+      inference: args.result?.inference,
+      next: args.result?.next,
+      evidenceUsed: args.result?.evidenceUsed,
+      model: args.result?.model,
+      error: args.result?.error,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+      return existing._id;
+    }
+    return await ctx.db.insert('mbtiEventAssessments', {
+      experimentId: args.experimentId,
+      mbtiEventId: args.eventId,
+      worldId: args.worldId,
+      createdAt: now,
+      ...patch,
+    });
+  },
+});
+
+export const assessMbtiEvent = action({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+    eventId: v.id('mbtiEvents'),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.runAction(assessMbtiEventNodeRef, args);
+  },
+});
+
+export function buildEventAssessmentPrompt(payload: {
+  experiment: Doc<'mbtiExperiments'>;
+  event: Doc<'mbtiEvents'>;
+  evidence: Doc<'mbtiEventEvidence'>[];
+  behaviorEvents: Doc<'mbtiBehaviorEvents'>[];
+  userResponses: Doc<'mbtiUserResponses'>[];
+}) {
+  const event = payload.event;
+  const evidenceLines = [
+    ...payload.evidence.map((item) =>
+      `- ${evidenceKindLabel(item.kind)}：${item.summary}（原因：${item.reason}）`,
+    ),
+    ...payload.behaviorEvents.map((item) => `- 行为：${item.description}`),
+    ...payload.userResponses.map((item) =>
+      `- 用户校准：${item.selectedOption}${item.freeText ? `；补充：${item.freeText}` : ''}${item.correctionText ? `；修正：${item.correctionText}` : ''}`,
+    ),
+  ].slice(0, 10);
+  return [
+    `用户原问题：${payload.experiment.question}`,
+    `人格代码：${payload.experiment.profile.code}`,
+    '',
+    '当前事件：',
+    `标题：${event.title}`,
+    `描述：${event.description}`,
+    `考察维度：${event.testedVariable ?? '未写明'}`,
+    `问题关系：${event.questionLink ?? '未写明'}`,
+    `想看什么：${event.informationGoal ?? '未写明'}`,
+    `预期信号：${event.expectedSignals?.join('、') ?? '未写明'}`,
+    '',
+    '当前事件证据，只能根据这些判断：',
+    evidenceLines.length ? evidenceLines.join('\n') : '- 暂无证据',
+    '',
+    '输出要求：summary 不要抽象术语；inference 必须点名证据；不要把其他事件的房屋、退休、关系等内容套进来。',
+  ].join('\n');
+}
+
+export function parseEventAssessmentJson(content: string) {
+  const jsonText = content.trim().match(/\{[\s\S]*\}/)?.[0] ?? content.trim();
+  const parsed = JSON.parse(jsonText) as {
+    summary?: unknown;
+    inference?: unknown;
+    next?: unknown;
+    evidenceUsed?: unknown;
+  };
+  const summary = typeof parsed.summary === 'string' ? compactForPrompt(parsed.summary.trim(), 80) : '';
+  const inference = typeof parsed.inference === 'string' ? compactForPrompt(parsed.inference.trim(), 420) : '';
+  const next = typeof parsed.next === 'string' ? compactForPrompt(parsed.next.trim(), 180) : '';
+  const evidenceUsed = Array.isArray(parsed.evidenceUsed)
+    ? parsed.evidenceUsed
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => compactForPrompt(item.trim(), 120))
+      .filter(Boolean)
+      .slice(0, 4)
+    : [];
+  if (!summary || !inference) {
+    throw new Error(`事件评估 LLM 返回缺少 summary/inference：${content}`);
+  }
+  return { summary, inference, next, evidenceUsed };
 }
 
 async function chooseUserEventBehavior(
@@ -1456,7 +2394,7 @@ function compactEventFallback(description: string) {
   return detail ? `我注意到的是：${detail}。` : '';
 }
 
-function compactForPrompt(text: string, maxLength: number) {
+export function compactForPrompt(text: string, maxLength: number) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }
 
@@ -1523,6 +2461,10 @@ export const getExperiment = query({
       .query('mbtiEventEvidence')
       .withIndex('world_time', (q) => q.eq('worldId', experiment.worldId))
       .take(320);
+    const eventAssessments = await ctx.db
+      .query('mbtiEventAssessments')
+      .withIndex('world_time', (q) => q.eq('worldId', experiment.worldId))
+      .take(320);
     const userResponses = await ctx.db
       .query('mbtiUserResponses')
       .withIndex('experiment_time', (q) => q.eq('experimentId', experiment._id))
@@ -1548,6 +2490,7 @@ export const getExperiment = query({
       playerDescriptions,
       events,
       eventEvidence,
+      eventAssessments,
       userResponses,
       behaviorEvents,
       innerThoughts,
@@ -1571,6 +2514,13 @@ export const submitUserResponse = mutation({
       v.literal('partial'),
       v.literal('not_fit'),
     ),
+    feedbackType: v.optional(v.union(
+      v.literal('user_reaction'),
+      v.literal('unrealistic_event'),
+      v.literal('unrealistic_person'),
+      v.literal('hit_real_issue'),
+      v.literal('condition_correction'),
+    )),
     correctionText: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -1593,12 +2543,13 @@ export const submitUserResponse = mutation({
       emotions: args.emotions.map((emotion) => emotion.trim()).filter(Boolean).slice(0, 6),
       freeText: args.freeText.trim().slice(0, 1200),
       scenarioFit: args.scenarioFit,
+      feedbackType: args.feedbackType ?? feedbackTypeFromFit(args.scenarioFit, args.correctionText, args.freeText),
       correctionText: args.correctionText?.trim().slice(0, 1200) || undefined,
       responseStatus: 'responded' as const,
     };
     if (existing) {
       await ctx.db.patch(existing._id, payload);
-      if (!['seeded', 'moving', 'conversation_pending'].includes(event.status)) {
+      if (!['seeded', 'candidate', 'delayed', 'moving', 'conversation_pending'].includes(event.status)) {
         await ctx.db.patch(args.mbtiEventId, { status: 'responded' });
       }
       await refreshDecisionState(ctx, args.experimentId);
@@ -1610,7 +2561,7 @@ export const submitUserResponse = mutation({
       createdAt: now,
       ...payload,
     });
-    if (!['seeded', 'moving', 'conversation_pending'].includes(event.status)) {
+    if (!['seeded', 'candidate', 'delayed', 'moving', 'conversation_pending'].includes(event.status)) {
       await ctx.db.patch(args.mbtiEventId, { status: 'responded' });
     }
     await refreshDecisionState(ctx, args.experimentId);
@@ -1644,6 +2595,7 @@ export const skipUserResponse = mutation({
       emotions: [] as string[],
       freeText: args.reason?.trim().slice(0, 1200) || '用户选择暂不回应这个情境。',
       scenarioFit: 'partial' as const,
+      feedbackType: 'unrealistic_event' as const,
       correctionText: args.reason?.trim().slice(0, 1200) || undefined,
       responseStatus: 'skipped' as const,
     };
@@ -1657,11 +2609,101 @@ export const skipUserResponse = mutation({
         ...payload,
       });
     }
-    if (!['seeded', 'moving', 'conversation_pending'].includes(event.status)) {
+    if (!['seeded', 'candidate', 'delayed', 'moving', 'conversation_pending'].includes(event.status)) {
       await ctx.db.patch(args.mbtiEventId, { status: 'skipped' });
     }
     await refreshDecisionState(ctx, args.experimentId);
     return { skipped: true };
+  },
+});
+
+export function feedbackTypeFromFit(
+  scenarioFit: 'fits' | 'partial' | 'not_fit',
+  correctionText?: string,
+  freeText?: string,
+): Doc<'mbtiUserResponses'>['feedbackType'] {
+  const text = `${correctionText ?? ''} ${freeText ?? ''}`;
+  if (/这个人|角色|居民|朋友|对象|伴侣|不像.*人|说话不像/.test(text)) {
+    return 'unrealistic_person';
+  }
+  if (/不像|不真实|假|编的|离谱|不合理|不会发生|情境不对/.test(text)) {
+    return 'unrealistic_event';
+  }
+  if (/戳中|确实|真实|就是这样|很像|符合/.test(text)) {
+    return 'hit_real_issue';
+  }
+  if (scenarioFit !== 'fits' || correctionText) {
+    return 'condition_correction';
+  }
+  return 'user_reaction';
+}
+
+export const collectTownAuthenticityFeedback = internalQuery({
+  args: {
+    townId: v.optional(v.id('mbtiTownProfiles')),
+    question: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const recentExperiments = await ctx.db
+      .query('mbtiExperiments')
+      .withIndex('createdAt')
+      .order('desc')
+      .take(24);
+    const experiments = recentExperiments
+      .filter((experiment) => !args.townId || experiment.townId === args.townId)
+      .slice(0, 8);
+    const entries: Array<{
+      feedbackType?: Doc<'mbtiUserResponses'>['feedbackType'];
+      question: string;
+      eventTitle: string;
+      selectedOption: string;
+      freeText: string;
+      correctionText?: string;
+    }> = [];
+    for (const experiment of experiments) {
+      const responses = await ctx.db
+        .query('mbtiUserResponses')
+        .withIndex('experiment_time', (q) => q.eq('experimentId', experiment._id))
+        .order('desc')
+        .take(8);
+      const meaningfulResponses = responses.filter((response) =>
+        response.feedbackType &&
+        response.feedbackType !== 'user_reaction' &&
+        (
+          response.feedbackType === 'unrealistic_event' ||
+          response.feedbackType === 'unrealistic_person' ||
+          response.feedbackType === 'hit_real_issue' ||
+          response.feedbackType === 'condition_correction'
+        ),
+      );
+      if (meaningfulResponses.length === 0) {
+        continue;
+      }
+      const events = await ctx.db
+        .query('mbtiEvents')
+        .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
+        .collect();
+      const eventById = new Map(events.map((event) => [String(event._id), event]));
+      for (const response of meaningfulResponses) {
+        const event = eventById.get(String(response.mbtiEventId));
+        entries.push({
+          feedbackType: response.feedbackType,
+          question: experiment.question,
+          eventTitle: event?.title ?? '未知事件',
+          selectedOption: response.selectedOption,
+          freeText: response.freeText,
+          correctionText: response.correctionText,
+        });
+      }
+    }
+    const normalizedQuestion = args.question?.trim();
+    return entries
+      .sort((left, right) => {
+        const leftSameQuestion = normalizedQuestion && left.question.trim() === normalizedQuestion ? 1 : 0;
+        const rightSameQuestion = normalizedQuestion && right.question.trim() === normalizedQuestion ? 1 : 0;
+        return rightSameQuestion - leftSameQuestion;
+      })
+      .slice(0, 10);
   },
 });
 
@@ -1732,6 +2774,8 @@ async function maybeCreateAdaptiveProbe(
     return;
   }
   const needsCalibration = latestResponse.scenarioFit !== 'fits' || Boolean(latestResponse.correctionText);
+  const authenticityFeedback = latestResponse.feedbackType === 'unrealistic_event' ||
+    latestResponse.feedbackType === 'unrealistic_person';
   const targetVariable = needsCalibration
     ? adaptiveVariableFromResponse(latestResponse, decisionState)
     : decisionState.uncertainVariables[0];
@@ -1765,30 +2809,40 @@ async function maybeCreateAdaptiveProbe(
   const title = needsCalibration
     ? `校准探针：${compactForPrompt(targetVariable, 18)}`
     : `追问探针：${compactForPrompt(targetVariable, 18)}`;
+  const schedule = timelineScheduleForEventIndex(events.length);
   const adaptiveReason = needsCalibration
-    ? `用户修正了情境理解：${latestResponse.correctionText || latestResponse.freeText || '情境不完全贴合'}`
+    ? authenticityFeedback
+      ? `用户指出模拟真实性不足：${latestResponse.correctionText || latestResponse.freeText || '事件或人物不够像真实生活'}`
+      : `用户修正了情境理解：${latestResponse.correctionText || latestResponse.freeText || '情境不完全贴合'}`
     : `用户已回应部分变量，下一步优先测试仍不确定的“${targetVariable}”。`;
-  const eventId = await ctx.db.insert('mbtiEvents', {
+  await ctx.db.insert('mbtiEvents', {
     experimentId,
     worldId: experiment.worldId,
     createdAt: now,
     tickOffset: 2 + events.length * 2,
+    scheduledDay: schedule.scheduledDay,
+    scheduledPhase: schedule.scheduledPhase,
+    timelineTriggerReason: needsCalibration ? 'user_calibration_generated_probe' : 'decision_state_generated_probe',
     kind: needsCalibration ? 'evaluation' : 'opportunity',
     title,
     description: [
       `场景：小镇公共地点，居民围绕刚才暴露出的真实约束继续推进一次校准。`,
       `事件强度：中等`,
-      `具体事情：居民把“${targetVariable}”具体化成一个新的现实条件，请我判断这个条件是否会改变原来的选择。`,
+      `具体事情：${authenticityFeedback
+        ? `居民必须把“${targetVariable}”改写成带有真实生活锚点的一幕，并只依据自己知道的信息介入。`
+        : `居民把“${targetVariable}”具体化成一个新的现实条件，请我判断这个条件是否会改变原来的选择。`}`,
       `参与者：我${adaptiveResidentNames.length ? `、${adaptiveResidentNames.join('、')}` : '、当前场景居民'}`,
       `观察维度：${targetVariable}`,
-      `问题关联：根据用户真实回应动态生成，用来验证刚刚确认或修正的解释是否稳定。`,
+      `问题关联：根据用户校准和小镇自然证据动态生成，用来验证刚刚确认或修正的解释是否稳定。`,
       `想获得的信息：${adaptiveReason}`,
-      `可评判信号：用户是否坚持原选择、提出条件边界、改选过渡方案或指出系统仍误解了自己。`,
+      `可评判信号：${authenticityFeedback
+        ? '新的事件是否更贴近真实生活、人物是否只按有限信息介入。'
+        : '用户是否坚持原选择、提出条件边界、改选过渡方案或指出系统仍误解了自己。'}`,
     ].join(' '),
     involvedRoles: adaptiveInvolvedRoles,
     testedVariable: targetVariable,
     testedHypotheses: (experiment.questionFocus?.outcomeHypotheses ?? []).map((hypothesis) => hypothesis.label).slice(0, 4),
-    questionLink: '根据用户真实回应动态生成，用来验证当前解释是否稳定。',
+    questionLink: '根据用户校准和小镇自然证据动态生成，用来验证当前解释是否稳定。',
     informationGoal: adaptiveReason,
     expectedSignals: ['坚持原选择', '提出条件边界', '改选过渡方案', '指出系统误解'],
     biasDirection: 'balanced',
@@ -1798,11 +2852,7 @@ async function maybeCreateAdaptiveProbe(
       ? residentParticipation.roles.map((role, index) => `${role}：${adaptiveResidentNames[index % adaptiveResidentNames.length]}`)
       : residentParticipation.roles,
     residentParticipationGoal: residentParticipation.goal,
-    status: 'seeded',
-  });
-  await ctx.scheduler.runAfter(MBTI_SCENE_EVENT_MIN_GAP_MS, internal.mbti.triggerSceneEvent, {
-    experimentId,
-    eventId,
+    status: 'candidate',
   });
 }
 
@@ -1828,7 +2878,7 @@ async function adaptiveResidentParticipants(
       }
     }
   }
-  const createdResidentRoles = experiment.socialField.createdRoles
+  const createdResidentRoles = (experiment.socialField?.createdRoles ?? [])
     .filter((role) => role.startsWith('resident:'))
     .map((role) => role.replace(/^resident:/, ''))
     .filter(Boolean);
@@ -1911,43 +2961,81 @@ export const finalizeExperiment = internalAction({
     experimentId: v.id('mbtiExperiments'),
   },
   handler: async (ctx, args) => {
-    const evidence = await ctx.runQuery(internal.mbti.collectExperimentEvidence, {
-      experimentId: args.experimentId,
-    });
-    if (!evidence || evidence.experiment.status !== 'running') {
+    const reportResult = await ctx.runAction(buildExperimentReportNodeRef, args) as {
+      report: MbtiReport;
+      status: Doc<'mbtiExperiments'>['status'];
+    } | null;
+    if (!reportResult || reportResult.status !== 'running') {
       return null;
-    }
-    const reportEvidence = {
-      ...evidence,
-      behaviorEvents: (evidence as { behaviorEvents?: Doc<'mbtiBehaviorEvents'>[] }).behaviorEvents ?? [],
-    };
-    const fallbackReport = buildDeterministicReport(reportEvidence);
-    let report = fallbackReport;
-    try {
-      const { content } = await chatCompletion({
-        messages: [
-          {
-            role: 'user',
-            content: buildReportPrompt(reportEvidence, fallbackReport),
-          },
-        ],
-        max_tokens: 700,
-        temperature: 0.2,
-      });
-      report = {
-        ...fallbackReport,
-        summary: content.trim() || fallbackReport.summary,
-      };
-    } catch (error) {
-      console.warn('MBTI experiment report LLM failed, using deterministic report', error);
     }
     await ctx.runMutation(internal.mbti.completeExperiment, {
       experimentId: args.experimentId,
-      report,
+      report: reportResult.report,
     });
-    return report;
+    return reportResult.report;
   },
 });
+
+export const refreshExperimentReport = action({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+  },
+  handler: async (ctx, args) => {
+    const reportResult = await ctx.runAction(buildExperimentReportNodeRef, args) as {
+      report: MbtiReport;
+      status: Doc<'mbtiExperiments'>['status'];
+    } | null;
+    if (!reportResult || !['running', 'complete'].includes(reportResult.status)) {
+      return null;
+    }
+    await ctx.runMutation(replaceExperimentReportRef, {
+      experimentId: args.experimentId,
+      report: reportResult.report,
+    });
+    return reportResult.report;
+  },
+});
+
+export async function buildReportFromEvidence(evidence: {
+  experiment: Doc<'mbtiExperiments'>;
+  messages: Doc<'messages'>[];
+  archivedConversations: Doc<'archivedConversations'>[];
+  events: Doc<'mbtiEvents'>[];
+  eventEvidence: Doc<'mbtiEventEvidence'>[];
+  userResponses: Doc<'mbtiUserResponses'>[];
+  innerThoughts: Doc<'innerThoughts'>[];
+  socialEvents: Doc<'socialEvents'>[];
+  behaviorEvents?: Doc<'mbtiBehaviorEvents'>[];
+  memories: Doc<'memories'>[];
+}) {
+  if (!evidence) {
+    throw new Error('Missing MBTI experiment evidence.');
+  }
+  const reportEvidence = {
+    ...evidence,
+    behaviorEvents: (evidence as { behaviorEvents?: Doc<'mbtiBehaviorEvents'>[] }).behaviorEvents ?? [],
+  };
+  const fallbackReport = buildDeterministicReport(reportEvidence);
+  try {
+    const { content } = await chatCompletion({
+      messages: [
+        {
+          role: 'user',
+          content: buildReportPrompt(reportEvidence, fallbackReport),
+        },
+      ],
+      max_tokens: 700,
+      temperature: 0.2,
+    });
+    return {
+      ...fallbackReport,
+      summary: content.trim() || fallbackReport.summary,
+    };
+  } catch (error) {
+    console.warn('MBTI experiment report LLM failed, using deterministic report', error);
+    return fallbackReport;
+  }
+}
 
 export const collectExperimentEvidence = internalQuery({
   args: {
@@ -2021,6 +3109,76 @@ export const collectExperimentEvidence = internalQuery({
   },
 });
 
+export const finalizeExperimentIfReady = action({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+  },
+  handler: async (ctx, args) => {
+    const readiness = await ctx.runQuery(experimentReadyForFinalReportRef, {
+      experimentId: args.experimentId,
+    }) as {
+      ready: boolean;
+      reason: string;
+      eventCount: number;
+      recordedEventCount: number;
+    };
+    if (!readiness.ready) {
+      return readiness;
+    }
+    await ctx.runAction(finalizeExperimentRef, {
+      experimentId: args.experimentId,
+    });
+    return { ...readiness, finalizeRequested: true };
+  },
+});
+
+export const experimentReadyForFinalReport = internalQuery({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    if (!experiment) {
+      return { ready: false, reason: 'missing-experiment', eventCount: 0, recordedEventCount: 0 };
+    }
+    if (experiment.status !== 'running') {
+      return { ready: false, reason: `status-${experiment.status}`, eventCount: 0, recordedEventCount: 0 };
+    }
+    const events = await ctx.db
+      .query('mbtiEvents')
+      .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
+      .collect();
+    const socialEvents = await ctx.db
+      .query('socialEvents')
+      .withIndex('by_world_time', (q) => q.eq('worldId', experiment.worldId))
+      .collect();
+    const userResponses = await ctx.db
+      .query('mbtiUserResponses')
+      .withIndex('experiment_time', (q) => q.eq('experimentId', experiment._id))
+      .collect();
+    const recordedEventIds = new Set(
+      socialEvents
+        .map((event) => event.mbtiEventId)
+        .filter((eventId): eventId is Id<'mbtiEvents'> => Boolean(eventId)),
+    );
+    const allEventsRecorded = plannedEventsReadyForFinalReport(events, socialEvents);
+    const answerReadiness = answerPositionReadiness(events, socialEvents, userResponses);
+    const ready = allEventsRecorded || answerReadiness.ready;
+    return {
+      ready,
+      reason: allEventsRecorded
+        ? 'all-events-recorded'
+        : answerReadiness.ready
+        ? answerReadiness.reason
+        : 'waiting-event-records',
+      eventCount: events.length,
+      recordedEventCount: events.filter((event) => recordedEventIds.has(event._id)).length,
+      respondedEventCount: answerReadiness.respondedEventCount,
+      testedVariableCount: answerReadiness.testedVariableCount,
+    };
+  },
+});
+
 export const completeExperiment = internalMutation({
   args: {
     experimentId: v.id('mbtiExperiments'),
@@ -2030,6 +3188,32 @@ export const completeExperiment = internalMutation({
       personalityFit: v.string(),
       evidence: v.array(v.string()),
       conclusion: v.string(),
+      decisionInsights: v.optional(v.object({
+        why: v.string(),
+        changeConditions: v.string(),
+        stableValue: v.string(),
+        nextValidation: v.string(),
+      })),
+      decisionStructure: v.optional(v.object({
+        surfaceQuestion: v.string(),
+        underlyingDecision: v.string(),
+        decisionDimensions: v.array(v.object({
+          label: v.string(),
+          whyItMatters: v.string(),
+          userBlindSpot: v.optional(v.string()),
+        })),
+        personalityLevers: v.array(v.string()),
+        unknowns: v.array(v.string()),
+        hiddenNeeds: v.array(v.string()),
+        riskBlindspots: v.array(v.string()),
+        possiblePaths: v.array(v.object({
+          label: v.string(),
+          whenLikely: v.string(),
+          possibleResult: v.string(),
+        })),
+        changeConditions: v.array(v.string()),
+        nextValidationQuestions: v.array(v.string()),
+      })),
       answerOptions: v.optional(v.array(v.object({
         label: v.string(),
         probability: v.number(),
@@ -2055,22 +3239,27 @@ export const completeExperiment = internalMutation({
     if (!experiment || experiment.status !== 'running') {
       return null;
     }
-    const engine = await ctx.db.get(experiment.engineId);
-    if (engine?.running) {
-      await ctx.db.patch(experiment.engineId, {
-        running: false,
-        generationNumber: engine.generationNumber + 1,
-      });
+    const runtimePolicy = completionRuntimePolicyForExperiment(experiment);
+    if (runtimePolicy.stopEngine) {
+      const engine = await ctx.db.get(experiment.engineId);
+      if (engine?.running) {
+        await ctx.db.patch(experiment.engineId, {
+          running: false,
+          generationNumber: engine.generationNumber + 1,
+        });
+      }
     }
-    const worldStatus = await ctx.db
-      .query('worldStatus')
-      .withIndex('worldId', (q) => q.eq('worldId', experiment.worldId))
-      .first();
-    if (worldStatus) {
-      await ctx.db.patch(worldStatus._id, {
-        status: 'inactive',
-        lastViewed: Date.now(),
-      });
+    if (runtimePolicy.markWorldInactive) {
+      const worldStatus = await ctx.db
+        .query('worldStatus')
+        .withIndex('worldId', (q) => q.eq('worldId', experiment.worldId))
+        .first();
+      if (worldStatus) {
+        await ctx.db.patch(worldStatus._id, {
+          status: 'inactive',
+          lastViewed: Date.now(),
+        });
+      }
     }
     await createCompletionSocialEvent(ctx, experiment.worldId);
     const events = await ctx.db
@@ -2117,6 +3306,32 @@ export const completeExperiment = internalMutation({
       });
     }
     return { completed: true };
+  },
+});
+
+export function completionRuntimePolicyForExperiment(experiment: { townId?: unknown }) {
+  const persistentTownRun = Boolean(experiment.townId);
+  return {
+    stopEngine: !persistentTownRun,
+    markWorldInactive: !persistentTownRun,
+  };
+}
+
+export const replaceExperimentReport = internalMutation({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+    report: v.any(),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    if (!experiment) {
+      return null;
+    }
+    await ctx.db.patch(experiment._id, {
+      updatedAt: Date.now(),
+      report: args.report,
+    });
+    return { updated: true };
   },
 });
 
@@ -2653,25 +3868,8 @@ async function deleteExperimentIndexedBatch(
 
 export const debugLLM = action({
   args: {},
-  handler: async () => {
-    const config = getLLMConfig();
-    const started = Date.now();
-    const { content, retries, ms } = await chatCompletion({
-      messages: [{ role: 'user', content: '请只回复：ok' }],
-      max_tokens: 8,
-      temperature: 0,
-    });
-    return {
-      provider: config.provider,
-      url: config.url,
-      chatModel: config.chatModel,
-      embeddingModel: config.embeddingModel,
-      hasApiKey: Boolean(config.apiKey),
-      content,
-      retries,
-      ms,
-      totalMs: Date.now() - started,
-    };
+  handler: async (ctx) => {
+    return await ctx.runAction(debugLLMNodeRef, {});
   },
 });
 
@@ -2704,10 +3902,11 @@ function durationForRunCount(runCount: number) {
   return 30 * 60 * 1000;
 }
 
-function normalizeObservationDuration(durationMs: number | undefined, runCount: number) {
+export function normalizeObservationDuration(durationMs: number | undefined, runCount: number, label?: string) {
   if (typeof durationMs === 'number' && Number.isFinite(durationMs)) {
-    const min = 30 * 60 * 1000;
-    const max = 8 * 60 * 60 * 1000;
+    const fastAcceptanceRun = label?.includes('快速验收') ?? false;
+    const min = fastAcceptanceRun ? 90 * 1000 : 30 * 60 * 1000;
+    const max = fastAcceptanceRun ? 10 * 60 * 1000 : 8 * 60 * 60 * 1000;
     return Math.min(max, Math.max(min, Math.round(durationMs)));
   }
   return durationForRunCount(runCount);
@@ -2766,6 +3965,29 @@ function locationLabelForKey(locationKey?: string) {
     shop: '商店',
   };
   return locationKey ? labels[locationKey] ?? '现场' : '现场';
+}
+
+export function locationKeyForEventScene(scene: string, fallback?: string) {
+  const text = scene.toLowerCase();
+  if (/咖啡|cafe/.test(text)) return 'cafe';
+  if (/广场|集市|square/.test(text)) return 'square';
+  if (/诊所|医院|健康|clinic/.test(text)) return 'clinic';
+  if (/办公室|社区办公室|社保|规则|office/.test(text)) return 'office';
+  if (/学校|校舍|school/.test(text)) return 'school';
+  if (/河边|步道|riverside/.test(text)) return 'riverside';
+  if (/走廊|公寓|hallway/.test(text)) return 'hallway';
+  if (/工坊|修理|workshop/.test(text)) return 'workshop';
+  if (/车站|station/.test(text)) return 'station';
+  if (/商店|shop/.test(text)) return 'shop';
+  return fallback ?? 'square';
+}
+
+export function stagingPointForEventLocation(locationKey: string | undefined, index: number) {
+  const candidates = townFacilitySpawnCandidates(locationKey);
+  if (candidates.length === 0) {
+    return { x: 20, y: 23 };
+  }
+  return candidates[index % candidates.length];
 }
 
 function dailyTownEvent(attempt: number) {
@@ -2839,12 +4061,20 @@ function buildDeterministicReport(evidence: {
     `用户行为 ${evidence.behaviorEvents.length} 条。`,
     `事件记录 ${evidence.socialEvents.length} 条。`,
     `主线事件 ${evidence.events.length} 个，绑定证据 ${evidence.eventEvidence.length} 条。`,
-    `真实用户关键回应 ${credibility.realUserResponseCount}/${credibility.requiredUserResponseCount} 个。`,
+    `关键补充 ${credibility.realUserResponseCount}/${credibility.requiredUserResponseCount} 个；未补充时优先依据小镇自然证据。`,
   ];
   if (evidence.experiment.questionFocus) {
+    const structure = evidence.experiment.questionFocus.decisionStructure;
     evidenceLines.push(
       `本轮观察目标：${evidence.experiment.questionFocus.observationGoal}`,
       `证据方向：${evidence.experiment.questionFocus.evidenceTargets.join('、')}`,
+      ...(structure
+        ? [
+            `真实决策：${structure.underlyingDecision}`,
+            `关键未知：${structure.unknowns.slice(0, 4).join('、')}`,
+            `风险盲点：${structure.riskBlindspots.slice(0, 4).join('、')}`,
+          ]
+        : []),
     );
   }
   const tendency = [
@@ -2858,14 +4088,18 @@ function buildDeterministicReport(evidence: {
       ? `当前证据初步支持 ${evidence.experiment.profile.code} 的行为倾向：${tendency}。`
       : `当前证据还偏少，只能作为 ${evidence.experiment.profile.code} 的初步观察：${tendency}。`;
   const answerOptions = buildAnswerOptions(evidence, tendency);
+  const decisionInsights = buildDecisionInsights(evidence, answerOptions, tendency);
+  const underlyingDecision = evidence.experiment.questionFocus?.decisionStructure?.underlyingDecision;
   return {
     generatedAt: Date.now(),
-    summary: evidence.experiment.questionFocus
-      ? `本次小镇演化围绕“${evidence.experiment.question}”运行，重点观察“${evidence.experiment.questionFocus.observationGoal}”。`
-      : `本次小镇演化围绕“${evidence.experiment.question}”运行，按对话轮次折算为 ${dayCount} 天。`,
+    summary: underlyingDecision
+      ? `这个问题真正要判断的是：${underlyingDecision}。当前结论来自小镇事件、对话和行为证据，只能作为阶段性参考。`
+      : `当前结论来自小镇事件、对话和行为证据，按对话轮次折算为 ${dayCount} 天，只能作为阶段性参考。`,
     personalityFit: tendency,
     evidence: evidenceLines,
     conclusion,
+    decisionInsights,
+    decisionStructure: evidence.experiment.questionFocus?.decisionStructure,
     answerOptions,
     evidenceLevel: credibility.evidenceLevel,
     realUserResponseCount: credibility.realUserResponseCount,
@@ -2876,7 +4110,7 @@ function buildDeterministicReport(evidence: {
   };
 }
 
-function reportCredibility(
+export function reportCredibility(
   events: Doc<'mbtiEvents'>[],
   userResponses: Doc<'mbtiUserResponses'>[],
 ) {
@@ -2898,12 +4132,12 @@ function reportCredibility(
       : 'level_3';
   const confidenceNotice =
     evidenceLevel === 'level_3'
-      ? '关键回应覆盖较完整，当前结论可以作为较稳健的条件化参考。'
+      ? '关键补充较充分，当前结论可以作为较稳健的条件化参考。'
       : evidenceLevel === 'level_2'
-      ? `已完成部分关键回应，但仍缺 ${missingUserResponseCount} 个关键回应；当前结论是阶段性参考。`
+      ? `已有部分关键补充，仍有 ${missingUserResponseCount} 个不确定点需要后续验证；当前结论是阶段性参考。`
       : evidenceLevel === 'level_1'
-      ? `真实用户回应较少，仍缺 ${missingUserResponseCount} 个关键回应；当前结论可能不够准确，仅供参考。`
-      : '尚未采集到真实用户关键回应；当前只能基于问题、MBTI 先验和小镇模拟证据给出低可信参考。';
+      ? `关键补充较少，仍有 ${missingUserResponseCount} 个不确定点需要后续验证；当前结论主要来自小镇自然证据和人格先验。`
+      : '当前没有额外用户校准；结论主要来自入口问题、MBTI 先验和小镇自然证据，因此只能低置信参考。';
   return {
     evidenceLevel,
     realUserResponseCount,
@@ -2913,7 +4147,7 @@ function reportCredibility(
   };
 }
 
-function buildAnswerOptions(evidence: {
+export function buildAnswerOptions(evidence: {
   experiment: Doc<'mbtiExperiments'>;
   messages: Doc<'messages'>[];
   innerThoughts: Doc<'innerThoughts'>[];
@@ -2940,6 +4174,9 @@ function buildAnswerOptions(evidence: {
   ].join(' ');
   if ((evidence.experiment.questionFocus?.outcomeHypotheses?.length ?? 0) >= 3) {
     return buildHypothesisAnswerOptions(evidence, tendency, evidenceCount);
+  }
+  if (isFuturePartnerQuestion(questionContext)) {
+    return buildFuturePartnerAnswerOptions(evidence, tendency, evidenceCount);
   }
   const relationshipContext = /伴侣|女朋友|男朋友|对象|亲密|恋爱|关系修复|修复关系|吵架|和好/.test(questionContext);
   if (!relationshipContext) {
@@ -2997,6 +4234,132 @@ function buildAnswerOptions(evidence: {
     },
   ];
   return normalizeAnswerOptions(raw, evidenceCount);
+}
+
+function buildFuturePartnerAnswerOptions(
+  evidence: {
+    experiment: Doc<'mbtiExperiments'>;
+    messages: Doc<'messages'>[];
+    innerThoughts: Doc<'innerThoughts'>[];
+    socialEvents: Doc<'socialEvents'>[];
+    eventEvidence: Doc<'mbtiEventEvidence'>[];
+    behaviorEvents: Doc<'mbtiBehaviorEvents'>[];
+    memories: Doc<'memories'>[];
+  },
+  tendency: string,
+  evidenceCount: number,
+): NonNullable<MbtiReport['answerOptions']> {
+  const behaviors = evidence.experiment.profile.behaviors;
+  const evidenceText = reportEvidenceText(evidence);
+  const steadyLifeBase =
+    30 +
+    Math.round((behaviors.closureNeed ?? 50) * 0.2) +
+    Math.round((behaviors.factChecking ?? 50) * 0.16) +
+    scoreEvidence(evidenceText, /老家|退休|作息|节奏|稳定|日常|安排|住处|生活方式|共同生活|边界/g, 8);
+  const communicationBase =
+    24 +
+    Math.round((behaviors.repairDrive ?? 50) * 0.22) +
+    Math.round((behaviors.meaningProjection ?? 50) * 0.12) +
+    scoreEvidence(evidenceText, /沟通|说清楚|商量|解释|倾听|确认|误解|表达|需求|边界/g, 7);
+  const independenceBase =
+    22 +
+    Math.round((behaviors.withdrawal ?? 50) * 0.16) +
+    Math.round((behaviors.factChecking ?? 50) * 0.14) +
+    scoreEvidence(evidenceText, /独立|空间|边界|经济|钱|花费|照护|责任|家务|自由|互不打扰/g, 7);
+  const mismatchBase =
+    18 +
+    Math.round((behaviors.emotionalSensitivity ?? 50) * 0.16) +
+    Math.round((behaviors.rumination ?? 50) * 0.12) +
+    scoreEvidence(evidenceText, /大城市|不愿回|控制|依赖|冷淡|冲突|消费|照护压力|不稳定|拖延/g, 7);
+  return normalizeAnswerOptions([
+    {
+      label: '生活节奏稳定型',
+      score: steadyLifeBase,
+      answer: '适合你的女性首先要愿意和你把退休后老家生活过稳定：作息接近，住处安排能谈清，日常不过度折腾，长期预期不飘。',
+      why: `这类人能降低共同生活的不确定性，适合先验证是否愿意回老家、怎么安排日常和住处。目前观察到：${tendency}。`,
+      signals: ['愿意讨论老家共同生活', '能把作息和住处安排说具体', '不把退休生活当成临时凑合'],
+    },
+    {
+      label: '能把话说清楚型',
+      score: communicationBase,
+      answer: '适合你的女性要能直接沟通需求、边界和不满；遇到分歧愿意说清楚，而不是长期忽冷忽热、让你反复猜。',
+      why: '如果相处中能稳定解释、商量、回应分歧，而不是让问题悬着，这条匹配会更强。',
+      signals: ['遇到分歧愿意说清楚', '能解释自己的需求', '不靠冷处理维持关系'],
+    },
+    {
+      label: '独立但愿意互相照应型',
+      score: independenceBase,
+      answer: '适合你的女性最好有自己的生活重心，经济和情绪上不过度依赖你，但关键时候愿意互相照应、共同承担。',
+      why: '退休后共同生活会涉及钱、家务、照护和个人空间，这些边界越早谈清楚越有价值。',
+      signals: ['经济边界清楚', '尊重个人空间', '愿意承担共同生活责任'],
+    },
+    {
+      label: '需要谨慎避开',
+      score: mismatchBase,
+      answer: '不太适合你的是生活方向和你相反、强烈不愿回老家、消费和照护责任说不清，或长期让你猜测态度的人。',
+      why: '这类对象可能短期有吸引力，但会把退休后的稳定生活变成持续消耗。',
+      signals: ['不愿谈共同生活安排', '经济或照护责任模糊', '长期制造不确定感'],
+    },
+  ], evidenceCount);
+}
+
+export function buildDecisionInsights(
+  evidence: {
+    experiment: {
+      question: string;
+      questionFocus?: {
+        observationGoal: string;
+        resolutionCriteria: string;
+        decisionStructure?: DecisionStructureInput;
+      };
+    };
+    messages: unknown[];
+    innerThoughts: unknown[];
+    socialEvents: unknown[];
+    eventEvidence: unknown[];
+    behaviorEvents: unknown[];
+    memories: unknown[];
+  },
+  options: NonNullable<MbtiReport['answerOptions']>,
+  tendency: string,
+): NonNullable<MbtiReport['decisionInsights']> {
+  const ranked = [...options].sort((a, b) => b.probability - a.probability);
+  const top = ranked[0];
+  const second = ranked[1];
+  const evidenceCount =
+    evidence.messages.length +
+    evidence.innerThoughts.length +
+    evidence.socialEvents.length +
+    evidence.eventEvidence.length +
+    evidence.behaviorEvents.length +
+    evidence.memories.length;
+  const goal = evidence.experiment.questionFocus?.observationGoal || evidence.experiment.question;
+  const threshold = evidence.experiment.questionFocus?.resolutionCriteria || '把抽象问题转成可验证条件';
+  const structure = evidence.experiment.questionFocus?.decisionStructure;
+  if (structure) {
+    const topPaths = structure.possiblePaths
+      .slice(0, 3)
+      .map((path) => `${path.label}：${path.whenLikely}，可能结果是${path.possibleResult}`)
+      .join('；');
+    const hiddenNeeds = structure.hiddenNeeds.slice(0, 4).join('、');
+    const risks = structure.riskBlindspots.slice(0, 4).join('、');
+    const unknowns = structure.unknowns.slice(0, 5).join('、');
+    const validation = structure.nextValidationQuestions.slice(0, 4).join('；');
+    return {
+      why: `这个问题真正要分析的是：${structure.underlyingDecision}。小镇不能直接预测答案，只能看你在这些变量上的取舍：${structure.decisionDimensions.slice(0, 5).map((item) => item.label).join('、')}。当前人格线索是：${tendency}。`,
+      changeConditions: `可能结果不是一条：${topPaths || '仍需要更多证据区分不同路径'}。会改变判断的条件包括：${structure.changeConditions.slice(0, 4).join('、')}。`,
+      stableValue: `你可能真正想保护的是：${hiddenNeeds || goal}。需要特别防止忽略：${risks || threshold}。`,
+      nextValidation: `下一步不要急着定答案，先补关键未知：${unknowns || threshold}。建议验证：${validation || threshold}。当前已有 ${evidenceCount} 条自然证据，只能支持阶段性假设。`,
+    };
+  }
+  const topSignals = top?.signals.slice(0, 3).join('、') || threshold;
+  const secondLabel = second?.label || '另一种可行路径';
+  return {
+    why: `为什么会倾向：当前更支持“${top?.label ?? '暂不下定论'}”，因为它最贴近本轮目标“${goal}”，并且与人格倾向相符：${tendency}。关键证据方向是：${topSignals}。`,
+    changeConditions: `哪些条件下会改变：如果后续事件显示“${secondLabel}”的证据更多，或者关键条件和预期相反，就应该调整判断；尤其要继续看：${threshold}。`,
+    stableValue: '真正稳定保护的是：不要急着替用户决定答案，而是保护用户最在意的长期条件、现实边界和可持续生活方式；证据不足时宁可降低可信度。',
+    nextValidation: `下一步怎样验证和行动：围绕最高不确定条件再设计 1-2 个小事件或现实提问，让用户给真实证据；当前已有 ${evidenceCount} 条自然证据，只能支持阶段性判断。`,
+  };
 }
 
 function buildHypothesisAnswerOptions(
@@ -3253,31 +4616,43 @@ function buildReportPrompt(
     .map((memory) => `- ${memory.description}`)
     .join('\n');
   const focus = evidence.experiment.questionFocus;
+  const structure = focus?.decisionStructure;
   const focusLines = focus
     ? [
         `观察目标：${focus.observationGoal}`,
         `核心压力：${focus.drivingTension}`,
         `证据目标：${focus.evidenceTargets.join('、')}`,
         `结论门槛：${focus.resolutionCriteria}`,
+        ...(structure
+          ? [
+              `表层问题：${structure.surfaceQuestion}`,
+              `真实决策：${structure.underlyingDecision}`,
+              `决策维度：${structure.decisionDimensions.map((item) => item.label).join('、')}`,
+              `关键未知：${structure.unknowns.join('、')}`,
+              `隐藏需求：${structure.hiddenNeeds.join('、')}`,
+              `风险盲点：${structure.riskBlindspots.join('、')}`,
+              `下一步验证：${structure.nextValidationQuestions.join('、')}`,
+            ]
+          : []),
       ].join('\n')
     : '暂无';
   return [
     `请基于小镇演化证据，输出一段中文实验结论。`,
-    `要求：简洁、可验证、不要玄学，不要说成现实必然。`,
+    `要求：简洁、可验证、不要玄学，不要说成现实必然；不要假装直接预测用户原问题答案，而是输出可能结果、隐藏需求、风险盲点和下一步验证。`,
     `设定：每结束一段对话代表过去一天。`,
     `用户人格：${evidence.experiment.profile.code}`,
     `问题：${evidence.experiment.question}`,
     `本轮问题驱动蓝图：\n${focusLines}`,
     `基础判断：${fallback.conclusion}`,
-    `报告可信等级：${fallback.evidenceLevel ?? 'level_0'}；真实用户关键回应 ${fallback.realUserResponseCount ?? 0}/${fallback.requiredUserResponseCount ?? 0}。`,
+    `报告可信等级：${fallback.evidenceLevel ?? 'level_0'}；用户校准 ${fallback.realUserResponseCount ?? 0}/${fallback.requiredUserResponseCount ?? 0}。`,
     `可信度提示：${fallback.confidenceNotice ?? fallback.limits}`,
-    `真实用户关键回应，优先于 AI 生成的“我”的台词：\n${userResponseLines || '暂无真实用户关键回应'}`,
+    `用户校准记录，优先于 AI 生成的“我”的台词：\n${userResponseLines || '暂无用户校准记录'}`,
     `按事件归属的实际证据：\n${eventLines || '暂无事件证据'}`,
     `兜底最近聊天，仅在事件证据不足时参考，不能替代事件证据：\n${messageLines || '暂无'}`,
     `用户行为证据：\n${behaviorLines || '暂无'}`,
     `内心独白：\n${thoughtLines || '暂无'}`,
     `记忆：\n${memoryLines || '暂无'}`,
-    `请用 4-6 句话回答：行为倾向是否符合用户人格、哪些真实用户回应支持、哪些事件缺证据、结论边界是什么。必须明确说明用户回应不足时结论仅供参考。`,
+    `请用 4-6 句话回答：行为倾向是否符合用户人格、哪些用户校准支持、哪些事件缺证据、结论边界是什么。必须明确说明用户校准不足时结论主要来自小镇自然证据和人格先验。`,
   ].join('\n\n');
 }
 
@@ -3294,16 +4669,32 @@ function buildUserResponseReportLines(
       const event = eventById.get(String(response.mbtiEventId));
       const correction = response.correctionText ? `；修正：${response.correctionText}` : '';
       const statusText = response.responseStatus === 'responded'
-        ? '真实回应'
+        ? '用户校准'
         : response.responseStatus === 'skipped'
-        ? '用户跳过'
+        ? '用户略过校准'
         : '阶段报告过期';
       return [
-        `- ${event?.title ?? '未知事件'}（${statusText}）：选择「${response.selectedOption}」，确定度 ${response.confidence}/7，情绪 ${response.emotions.join('、') || '未填'}`,
+        `- ${event?.title ?? '未知事件'}（${statusText} / ${feedbackTypeLabel(response.feedbackType)}）：选择「${response.selectedOption}」，确定度 ${response.confidence}/7，情绪 ${response.emotions.join('、') || '未填'}`,
         `  说明：${response.freeText || '未填写'}；情境贴合度：${scenarioFitLabel(response.scenarioFit)}${correction}`,
       ].join('\n');
     })
     .join('\n');
+}
+
+function feedbackTypeLabel(type: Doc<'mbtiUserResponses'>['feedbackType']) {
+  switch (type) {
+    case 'unrealistic_event':
+      return '事件不真实';
+    case 'unrealistic_person':
+      return '人物不像真实的人';
+    case 'hit_real_issue':
+      return '戳中真实问题';
+    case 'condition_correction':
+      return '现实条件修正';
+    case 'user_reaction':
+    default:
+      return '真实反应';
+  }
 }
 
 function scenarioFitLabel(fit: Doc<'mbtiUserResponses'>['scenarioFit']) {
@@ -3376,14 +4767,16 @@ function evidenceKindLabel(kind: Doc<'mbtiEventEvidence'>['kind']) {
 function eventStatusLabelForReport(status: Doc<'mbtiEvents'>['status']) {
   const labels: Record<Doc<'mbtiEvents'>['status'], string> = {
     seeded: '未触发',
+    candidate: '备用观察',
+    delayed: '条件不足',
     moving: '正在进入现场',
     conversation_pending: '等待相关对话',
     triggered: '已触发',
-    pending_user_response: '待用户回应',
+    pending_user_response: '可用户校准',
     observed: '已有证据',
-    responded: '已记录真实回应',
-    skipped: '用户已跳过',
-    expired_to_stage_report: '未回应，进入阶段报告',
+    responded: '已记录校准',
+    skipped: '用户已略过校准',
+    expired_to_stage_report: '未校准，进入阶段报告',
     resolved: '已完成',
     failed: '触发失败',
   };
@@ -3420,7 +4813,7 @@ function buildSelfIdentity(
 ) {
   const roleLines = roles
     .filter((role) => role.enabled)
-    .map((role) => `“${role.label}”是你的${relationshipName(role)}。`);
+    .map((role) => relationshipLineForSelf(role));
   return [
     `你叫“我”，今天来到常驻小镇。`,
     roleLines.length > 0 ? `你的人际关系：${roleLines.join(' ')}` : '',
@@ -3443,6 +4836,16 @@ function buildSelfPlan(focus?: QuestionFocusInput) {
     `先按当下事件生活和聊天，遇到压力时按真实反应处理。`,
     `如果出现这些变化，给出自然反应：${focus.eventBeats.join('、')}。`,
   ].join('\n');
+}
+
+function buildSelfProfile(question: string, mbtiCode: string) {
+  return [
+    `这是你在本轮小镇里的临时代理角色。`,
+    `它会围绕入口问题参与场景互动：${compactForPrompt(question, 80)}。`,
+    mbtiCode ? `初始性格倾向：${mbtiCode.toUpperCase()}。` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function buildSelfSpeechRules(behaviors: Record<string, number>) {
@@ -3475,6 +4878,7 @@ function roleMapping(role: { label: string; mapping?: string; traits?: string })
 }
 
 function relationshipName(role: { role?: string; label: string; mapping?: string }) {
+  if (role.role === 'candidate') return '意向认识对象';
   const mapping = role.mapping?.trim() || defaultRoleMapping(role);
   if (/伴侣|女朋友|男朋友|对象/.test(mapping)) return '伴侣';
   if (/暧昧|喜欢的人/.test(mapping)) return '暧昧对象';
@@ -3483,6 +4887,13 @@ function relationshipName(role: { role?: string; label: string; mapping?: string
   if (/家人|父母|妈妈|爸爸|亲戚|孩子/.test(mapping)) return '家人';
   if (/前任/.test(mapping)) return '前任';
   return role.label;
+}
+
+export function relationshipLineForSelf(role: { role?: string; label: string; mapping?: string }) {
+  if (role.role === 'candidate') {
+    return `“${role.label}”是你本次刚认识或被介绍认识的意向对象，不是现任伴侣。`;
+  }
+  return `“${role.label}”是你的${relationshipName(role)}。`;
 }
 
 function defaultRoleMapping(role: { role?: string; label: string }) {
@@ -3512,6 +4923,16 @@ function buildRoleIdentity(role: {
   traits: string;
 }) {
   const mapping = roleMapping(role);
+  if (role.role === 'candidate') {
+    return [
+      `你叫“${role.label}”，是本次场景里和“我”刚认识或被介绍认识的意向对象。`,
+      `关系线索：${mapping}。`,
+      role.traits ? `边界：${role.traits}` : '',
+      `你不是“我”的现任伴侣、女朋友、老婆或既有亲密关系。聊天要像相亲或初步认识，重点呈现共同生活条件、价值观、节奏和边界。`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
   const mbtiLine = role.mbtiCode.trim()
     ? `性格倾向大致接近 ${role.mbtiCode.trim().toUpperCase()}。`
     : '';
@@ -3533,27 +4954,100 @@ function buildRoleIdentity(role: {
     .join('\n');
 }
 
+function buildRoleProfile(role: RoleSeed) {
+  const relationship = relationshipName(role);
+  const label = role.label.trim() || '场景角色';
+  const mapping = role.mapping?.trim();
+  const cleanedTraits = role.traits
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('对应问题里的谁：'))
+    .join('，')
+    .trim();
+  return [
+    role.role === 'candidate'
+      ? `${label}是本次场景里的临时相识对象，会和你一起经历小镇里的生活片段。`
+      : `${label}是你在本轮情境中的${relationship}。`,
+    mapping ? `关系线索：${mapping}。` : '',
+    cleanedTraits ? `背景：${cleanedTraits}。` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 function buildSocialFieldRoles(enabledRoles: RoleSeed[]) {
   return [...enabledRoles];
 }
 
 function buildTownResidentIdentity(resident: TownResidentInput, backgroundOnly = false) {
+  const context = compactResidentContextForProfile(resident.context, 180);
+  const sceneRole = resident.sceneRole;
   return [
     `你叫“${resident.name}”，是常驻小镇里的${resident.role}。`,
     `日常活动地点：${resident.defaultLocationKey}。`,
     `性格倾向接近 ${resident.mbtiCode}。`,
     resident.traits.length > 0 ? `性格特征：${resident.traits.join('、')}。` : '',
     resident.background,
-    resident.context ? `小镇历史和关系背景：${resident.context}` : '',
+    context ? `小镇历史和关系背景：${context}` : '',
+    sceneRole ? `本轮临时社会位置：${sceneRole.relationToUser}；介入原因：${sceneRole.sceneReason}` : '',
+    sceneRole ? `你的个人利害：${sceneRole.personalStake}` : '',
+    sceneRole?.knowsAboutUser.length ? `你只知道这些用户信息：${sceneRole.knowsAboutUser.join('；')}` : '',
+    sceneRole?.doesNotKnow.length ? `你不知道这些信息，不能假装知道：${sceneRole.doesNotKnow.join('；')}` : '',
+    sceneRole ? `施压/支持方式：${sceneRole.pressureStyle}。允许介入范围：${sceneRole.allowedIntervention}` : '',
     backgroundOnly
       ? `你本来就在小镇生活，本次只是背景居民；可以在地图里活动，但不主动参与当前交流。`
-      : `你本来就在小镇生活，和来访者只是自然相遇。聊天要像普通居民，不要解释设定，不要提实验。`,
+      : `你本来就在小镇生活，和来访者只是自然相遇。聊天要像普通居民，不要解释设定，不要提实验；只能依据你知道的信息说话。`,
   ]
     .filter(Boolean)
     .join('\n');
 }
 
-function buildSeededEvents(
+function buildTownResidentProfile(resident: TownResidentInput) {
+  const location = locationLabelForKey(resident.defaultLocationKey);
+  const traitText = resident.traits.length > 0 ? resident.traits.join('、') : '';
+  const context = compactResidentContextForProfile(resident.context, 170);
+  const sceneRole = resident.sceneRole;
+  return [
+    `${resident.name}是小镇常驻居民，在镇上做${resident.role}，平时常出现在${location}。`,
+    traitText ? `这个人给人的印象是${traitText}。` : '',
+    resident.background,
+    context ? `小镇关系：${context}` : '',
+    sceneRole
+      ? `本轮他相对你的临时位置是${sceneRole.relationToUser}，会以${sceneRole.pressureStyle}的方式介入；他有自己的利害：${sceneRole.personalStake}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export function compactResidentContextForProfile(context: string | undefined, maxLength = 170) {
+  if (!context) {
+    return '';
+  }
+  const normalized = context
+    .replace(/\s+/g, ' ')
+    .replace(/和([a-z_]+)：/g, '和$1：')
+    .replace(/自主互动：/g, '')
+    .replace(/反思：/g, '')
+    .replace(/[^。；;]*在小镇日常里自然产生一次互动。?\s*/g, '')
+    .replace(/这次互动被旧记忆牵动：/g, '')
+    .replace(/互动让原有紧张略微浮出水面，后续更可能影响相关场景。?\s*/g, '关系紧张略有浮现。')
+    .replace(/互动增加了一点熟悉感，让后续场景更容易引用这段日常背景。?\s*/g, '日常熟悉度略有增加。')
+    .replace(/后续扰动应把这段关系当作稳定背景，而不是一次性事件。?\s*/g, '')
+    .trim();
+  const chunks = normalized
+    .split(/[。\n]/)
+    .map((chunk) => chunk.trim().replace(/[；;，,]$/, ''))
+    .filter(Boolean)
+    .filter((chunk) => !/^(当前短期意图|倾向地点|更可能靠近|会回避|话题线索)/.test(chunk));
+  const unique = [...new Set(chunks)]
+    .filter((chunk) => !/^\S+（.+?）和\S+（.+?）$/.test(chunk))
+    .slice(0, 4)
+    .join('。');
+  const compacted = unique ? `${unique}。` : normalized;
+  return compacted.length > maxLength ? `${compacted.slice(0, maxLength - 1)}…` : compacted;
+}
+
+export function buildSeededEvents(
   question: string,
   roles: RoleSeed[],
   residents: TownResidentInput[],
@@ -3562,10 +5056,10 @@ function buildSeededEvents(
   targetEventCount: number,
   focus?: QuestionFocusInput,
 ) {
-  const participantScope = buildEventParticipantScope(roles, residents);
+  const participantScope = buildEventParticipantScope(roles, residents, question);
   const concretePlans = focus?.eventPlans?.filter((plan) => plan.title && plan.trigger);
   if (concretePlans && concretePlans.length > 0) {
-    return concretePlans.slice(0, targetEventCount).map((plan, index) => {
+    return selectSeededEventPlans(concretePlans, targetEventCount, seed).map(({ plan, sourceIndex }, index) => {
       const participantPlan = normalizeEventParticipantPlan(plan.participants, participantScope, index);
       const involvedRoles = participantPlan.involvedRoles;
       const sanitizedTitle = sanitizeEventPlanText(plan.title, participantPlan, index);
@@ -3573,15 +5067,17 @@ function buildSeededEvents(
         sanitizeEventPlanText(plan.scene, participantPlan, index),
         sceneLocationKey,
       );
+      const locationKey = plan.locationKey ?? locationKeyForEventScene(sanitizedScene, sceneLocationKey);
+      const stagingPoint = stagingPointForEventLocation(locationKey, index);
       const sanitizedTrigger = concretizeEventTrigger(
         sanitizeEventPlanText(plan.trigger, participantPlan, index),
         plan.title,
-        plan.observationAxis ?? focus?.analysisDimensions?.[index % Math.max(1, focus.analysisDimensions.length)] ?? '',
+        plan.observationAxis ?? focus?.analysisDimensions?.[sourceIndex % Math.max(1, focus.analysisDimensions.length)] ?? '',
         index,
         participantPlan,
       );
       const testedVariable =
-        plan.observationAxis ?? focus?.analysisDimensions?.[index % Math.max(1, focus.analysisDimensions.length)] ?? '压力下的真实反应';
+        plan.observationAxis ?? focus?.analysisDimensions?.[sourceIndex % Math.max(1, focus.analysisDimensions.length)] ?? '压力下的真实反应';
       const expectedSignals = [
         plan.judgmentSignal,
         ...(focus?.outcomeHypotheses ?? [])
@@ -3592,28 +5088,43 @@ function buildSeededEvents(
         throw new Error(`动态情境探针“${plan.title}”缺少合格的用户选项。`);
       }
       const residentParticipation = residentParticipationForProbe(testedVariable, plan.informationGoal, index);
+      const sceneRoleLines = sceneRoleLinesForEvent(involvedRoles, residents);
+      const stakes = plan.stakes ?? inferEventStakes(sanitizedTrigger, testedVariable);
+      const consequenceOptions = plan.consequenceOptions ?? inferConsequenceOptions(plan.responseOptions, testedVariable);
+      const schedule = timelineScheduleForEventIndex(index);
       return {
         tickOffset: 2 + index * 2,
+        scheduledDay: schedule.scheduledDay,
+        scheduledPhase: schedule.scheduledPhase,
+        timelineTriggerReason: schedule.timelineTriggerReason,
         kind: eventKindForIndex(index),
         title: stripInternalEventPrefix(sanitizedTitle),
         description: [
           `场景：${sanitizedScene}`,
+          `地点：${locationLabelForKey(locationKey)}`,
           `事件强度：${normalizeEventSeverityLabel(plan.severity, index)}`,
           `具体事情：${sanitizedTrigger}`,
           `参与者：${involvedRoles.map(displayParticipantName).join('、')}`,
+          sceneRoleLines.length ? `居民本轮位置：${sceneRoleLines.join('；')}` : '',
           `观察维度：${testedVariable}`,
           `问题关联：${plan.questionLink ?? '把用户问题里的抽象担忧转成一次可观察的生活选择'}`,
           `想获得的信息：${plan.informationGoal}`,
           `可评判信号：${plan.judgmentSignal}`,
+          `现实代价：${formatEventStakes(stakes)}`,
+          `可能后果：${consequenceOptions.map((option) => `${option.userAction} -> ${option.relationshipDelta}，${option.unlocks}`).join('；')}`,
           `用户选项：${plan.responseOptions.join(' / ')}`,
-        ].join(' '),
+        ].filter(Boolean).join(' '),
         involvedRoles,
         testedVariable,
         testedHypotheses: (focus?.outcomeHypotheses ?? []).map((hypothesis) => hypothesis.label).slice(0, 4),
         questionLink: plan.questionLink ?? '把用户问题里的抽象担忧转成一次可观察的生活选择',
         informationGoal: plan.informationGoal,
+        locationKey,
+        stagingPoint,
         expectedSignals,
         responseOptions: plan.responseOptions,
+        stakes,
+        consequenceOptions,
         biasDirection: 'balanced' as const,
         probeOrigin: 'initial' as const,
         residentRoles: residentParticipation.roles,
@@ -3622,6 +5133,106 @@ function buildSeededEvents(
     });
   }
   throw new Error('缺少合格的动态情境探针事件计划；本轮不会使用默认事件。');
+}
+
+function selectSeededEventPlans<T extends { title: string; trigger: string }>(
+  plans: T[],
+  targetEventCount: number,
+  seed: number,
+) {
+  const targetCount = Math.max(1, Math.min(targetEventCount, plans.length));
+  return plans
+    .map((plan, sourceIndex) => ({
+      plan,
+      sourceIndex,
+      sortKey: deterministicSeed(String(seed), String(sourceIndex), plan.title, plan.trigger),
+    }))
+    .sort((a, b) => a.sortKey - b.sortKey || a.sourceIndex - b.sourceIndex)
+    .slice(0, targetCount);
+}
+
+function timelineScheduleForEventIndex(index: number): {
+  scheduledDay: number;
+  scheduledPhase: TownTimelinePhase;
+  timelineTriggerReason: string;
+} {
+  const phaseCycle: TownTimelinePhase[] = ['morning', 'evening', 'afternoon', 'night'];
+  const scheduledDay = index === 0 ? 1 : 1 + index * 2;
+  const scheduledPhase = phaseCycle[index % phaseCycle.length];
+  return {
+    scheduledDay,
+    scheduledPhase,
+    timelineTriggerReason: index === 0
+      ? 'opening_probe_after_user_entry'
+      : 'timeline_probe_after_town_life_progress',
+  };
+}
+
+function sceneRoleLinesForEvent(involvedRoles: string[], residents: TownResidentInput[]) {
+  const residentByName = new Map(residents.map((resident) => [resident.name, resident]));
+  return involvedRoles
+    .map(displayParticipantName)
+    .map((name) => residentByName.get(name))
+    .filter((resident): resident is TownResidentInput => Boolean(resident?.sceneRole))
+    .map((resident) => {
+      const role = resident.sceneRole!;
+      return `${resident.name}是${role.relationToUser}，介入动机是${compactForPrompt(role.personalStake, 72)}，只能${compactForPrompt(role.allowedIntervention, 72)}`;
+    })
+    .slice(0, 3);
+}
+
+function inferEventStakes(trigger: string, testedVariable: string): EventStakesInput {
+  const text = `${trigger} ${testedVariable}`;
+  if (/钱|元|收入|退休金|房租|费用|押金|账单|合同/.test(text)) {
+    return {
+      moneyCost: '这会改变本轮共同支出或个人现金边界。',
+      relationshipCost: '如果不说清钱的边界，相关居民会更警惕后续承诺。',
+    };
+  }
+  if (/家|住|老家|父母|儿女|孩子|照护|健康|病|药/.test(text)) {
+    return {
+      relationshipCost: '这会影响家人、照护责任或共同生活边界的信任。',
+      opportunityCost: '如果含糊处理，后续共同生活方案会变得更难落地。',
+    };
+  }
+  if (/工作|项目|机会|辞职|创业|客户|岗位/.test(text)) {
+    return {
+      timeCost: '这会占用下一步确认机会的时间窗口。',
+      opportunityCost: '处理方式会影响后续工作或机会是否继续开放。',
+    };
+  }
+  return {
+    timeCost: '这会消耗一次现场确认和沟通的时间。',
+    relationshipCost: '处理方式会让相关居民更信任或更警惕。',
+  };
+}
+
+function inferConsequenceOptions(responseOptions: string[], testedVariable: string): EventConsequenceOptionInput[] {
+  const first = responseOptions[0] ?? '我追问具体情况';
+  const second = responseOptions[1] ?? '我暂缓决定';
+  return [
+    {
+      userAction: first,
+      relationshipDelta: /边界|钱|责任/.test(testedVariable)
+        ? '相关居民会更清楚我的边界，也可能短暂感到被拒绝。'
+        : '相关居民会更信任我愿意把事实说清。',
+      unlocks: '后续可以继续验证这个条件是否能被稳定接受。',
+    },
+    {
+      userAction: second,
+      relationshipDelta: '相关居民会觉得我还没准备好承担这个选择的后果。',
+      unlocks: '后续会转向观察拖延、回避或替代方案。',
+    },
+  ];
+}
+
+function formatEventStakes(stakes: EventStakesInput) {
+  return [
+    stakes.timeCost ? `时间：${stakes.timeCost}` : '',
+    stakes.moneyCost ? `金钱：${stakes.moneyCost}` : '',
+    stakes.relationshipCost ? `关系：${stakes.relationshipCost}` : '',
+    stakes.opportunityCost ? `机会：${stakes.opportunityCost}` : '',
+  ].filter(Boolean).join('；');
 }
 
 function optionalAdaptiveReason(event: object): { adaptiveReason?: string } {
@@ -3684,7 +5295,10 @@ function stripInternalEventPrefix(title: string) {
 
 type EventParticipantScope = {
   allowedNames: Set<string>;
+  explicitRelationshipNames: string[];
   fallbackNames: string[];
+  residentNames: string[];
+  relationshipPlaceholderName: string;
 };
 
 type EventParticipantPlan = {
@@ -3692,32 +5306,69 @@ type EventParticipantPlan = {
   replacements: Map<string, string>;
 };
 
-function buildEventParticipantScope(roles: RoleSeed[], residents: TownResidentInput[]): EventParticipantScope {
+export function buildEventParticipantScope(
+  roles: RoleSeed[],
+  residents: TownResidentInput[],
+  question = '',
+): EventParticipantScope {
   const roleNames = roles
     .filter((role) => role.enabled)
+    .map((role) => role.label.trim())
+    .filter(Boolean);
+  const explicitRelationshipNames = roles
+    .filter((role) => role.enabled && isRelationshipRole(role))
     .map((role) => role.label.trim())
     .filter(Boolean);
   const residentNames = residents
     .map((resident) => resident.name.trim())
     .filter(Boolean);
   const fallbackNames = Array.from(new Set([...roleNames, ...residentNames]));
+  const futurePartnerQuestion = isFuturePartnerQuestion(question);
   return {
     allowedNames: new Set(['self', '我', ...fallbackNames]),
+    explicitRelationshipNames: futurePartnerQuestion ? [] : explicitRelationshipNames,
     fallbackNames,
+    residentNames,
+    relationshipPlaceholderName: futurePartnerQuestion ? '意向对象' : '未入场的关键对象',
   };
 }
 
-function normalizeEventParticipantPlan(
+export function normalizeEventParticipantPlan(
   participants: string[],
   scope: EventParticipantScope,
   index: number,
 ): EventParticipantPlan {
   const ordered = ['self'];
   const replacements = new Map<string, string>();
+  let hasOffscreenRelationshipParticipant = false;
   for (const participant of participants) {
     const raw = participant.trim();
     const normalized = normalizeParticipantName(raw);
     if (normalized === 'self' || normalized === '我') {
+      continue;
+    }
+    if (isRelationshipParticipantPlaceholder(raw)) {
+      const explicitRelationshipName = scope.explicitRelationshipNames[index % Math.max(1, scope.explicitRelationshipNames.length)];
+      if (explicitRelationshipName) {
+        replacements.set(raw, explicitRelationshipName);
+        ordered.push(explicitRelationshipName);
+      } else {
+        replacements.set(raw, scope.relationshipPlaceholderName);
+        if (scope.relationshipPlaceholderName === '意向对象') {
+          ordered.push(scope.relationshipPlaceholderName);
+        } else {
+          hasOffscreenRelationshipParticipant = true;
+        }
+      }
+      continue;
+    }
+    const residentPlaceholderIndex = residentPlaceholderOffset(raw);
+    if (residentPlaceholderIndex !== undefined) {
+      const replacement = scopedResidentName(scope, index + residentPlaceholderIndex);
+      if (replacement) {
+        replacements.set(raw, replacement);
+        ordered.push(replacement);
+      }
       continue;
     }
     if (scope.allowedNames.has(normalized)) {
@@ -3731,9 +5382,9 @@ function normalizeEventParticipantPlan(
     }
   }
   if (ordered.length === 1 && scope.fallbackNames.length > 0) {
-    ordered.push(scope.fallbackNames[index % scope.fallbackNames.length]);
+      ordered.push(scope.fallbackNames[index % scope.fallbackNames.length]);
   }
-  for (let offset = 0; ordered.length < Math.min(3, 1 + scope.fallbackNames.length) && offset < scope.fallbackNames.length; offset += 1) {
+  for (let offset = 0; !hasOffscreenRelationshipParticipant && ordered.length < Math.min(3, 1 + scope.fallbackNames.length) && offset < scope.fallbackNames.length; offset += 1) {
     const fallback = scope.fallbackNames[(index + offset) % scope.fallbackNames.length];
     if (fallback && !ordered.includes(fallback)) {
       ordered.push(fallback);
@@ -3745,13 +5396,56 @@ function normalizeEventParticipantPlan(
   };
 }
 
+function isRelationshipRole(role: { role?: string; label: string; mapping?: string }) {
+  return (
+    role.role === 'partner' ||
+    role.role === 'ambiguous' ||
+    /伴侣|女朋友|男朋友|对象|老婆|老公|恋人|暧昧|喜欢的人/.test(`${role.label} ${role.mapping ?? ''}`)
+  );
+}
+
+function isFuturePartnerQuestion(question: string) {
+  return (
+    /找一个?伴侣|找伴侣|找对象|找女朋友|找老婆|什么样的女人|什么样的人适合|适合我/.test(question) &&
+    /考虑|是否|想|未来|明年|退休|一起生活|共同生活|适合/.test(question)
+  );
+}
+
+function isRelationshipParticipantPlaceholder(participant: string) {
+  return /^(关键对象|伴侣|女朋友|男朋友|对象|对方|暧昧对象|喜欢的人|恋人|老婆|老公)$/.test(participant.trim());
+}
+
+function residentPlaceholderOffset(participant: string) {
+  const match = participant.trim().match(/^常驻居民([A-D甲乙丙丁])$/);
+  if (!match) {
+    return undefined;
+  }
+  const offsets: Record<string, number> = {
+    A: 0,
+    B: 1,
+    C: 2,
+    D: 3,
+    甲: 0,
+    乙: 1,
+    丙: 2,
+    丁: 3,
+  };
+  return offsets[match[1]];
+}
+
 function scopedFallbackName(scope: EventParticipantScope, index: number) {
   return scope.fallbackNames.length > 0
     ? scope.fallbackNames[index % scope.fallbackNames.length]
     : undefined;
 }
 
-function sanitizeEventPlanText(text: string, plan: EventParticipantPlan, index: number) {
+function scopedResidentName(scope: EventParticipantScope, index: number) {
+  return scope.residentNames.length > 0
+    ? scope.residentNames[index % scope.residentNames.length]
+    : scopedFallbackName(scope, index);
+}
+
+export function sanitizeEventPlanText(text: string, plan: EventParticipantPlan, index: number) {
   let sanitized = text;
   for (const [from, to] of plan.replacements.entries()) {
     if (from && to) {
@@ -3764,6 +5458,8 @@ function sanitizeEventPlanText(text: string, plan: EventParticipantPlan, index: 
   const first = nonSelfNames[index % Math.max(1, nonSelfNames.length)] ?? '我';
   const second = nonSelfNames[(index + 1) % Math.max(1, nonSelfNames.length)] ?? first;
   sanitized = sanitized
+    .replace(/(^|[，。；、\s])A(?=问|说|提到|提醒|表示|拿|告诉|指出|补充|反问|建议|担心|要求)/g, `$1${first}`)
+    .replace(/(^|[，。；、\s])B(?=问|说|提到|提醒|表示|拿|告诉|指出|补充|反问|建议|担心|要求)/g, `$1${second}`)
     .replace(/一位[^，。；、]{0,8}(顾客|上班族|邻居|居民|路人|摊主|店主|服务员|管理员|图书管理员)/g, second)
     .replace(/几位[^，。；、]{0,8}(顾客|上班族|邻居|居民|路人|摊主|服务员)/g, second)
     .replace(/(某位|一个|一名)[^，。；、]{0,8}(顾客|上班族|邻居|居民|路人|摊主|店主|服务员|管理员|图书管理员)/g, second)
@@ -3869,9 +5565,9 @@ function displayParticipantName(participant: string) {
   return normalizeParticipantName(participant) === 'self' ? '我' : participant;
 }
 
-function deterministicSeed(question: string, code: string) {
+export function deterministicSeed(...parts: string[]) {
   let hash = 2166136261;
-  for (const char of `${question}:${code}`) {
+  for (const char of parts.join(':')) {
     hash ^= char.charCodeAt(0);
     hash = Math.imul(hash, 16777619);
   }

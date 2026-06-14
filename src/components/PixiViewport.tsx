@@ -21,14 +21,14 @@ export type ViewportProps = {
 
 function configureViewport(viewport: Viewport, props: ViewportProps) {
   viewport.clamp({ direction: 'all', underflow: 'center' });
-  if (props.locked) {
-    viewport.clampZoom({ minScale: 1, maxScale: 1 });
-    return;
-  }
   const minScale = Math.max(
     (1.04 * props.screenWidth) / props.worldWidth,
     (1.04 * props.screenHeight) / props.worldHeight,
   );
+  if (props.locked) {
+    viewport.clampZoom({ minScale, maxScale: Math.max(1.25, minScale) });
+    return;
+  }
   viewport.clampZoom({
     minScale,
     maxScale: Math.max(3.0, minScale),
