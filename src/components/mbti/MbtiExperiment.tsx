@@ -38,24 +38,24 @@ import './MbtiExperiment.css';
 const baseExperimentScales = [
   {
     id: 'short',
-    label: '短时观察',
+    label: '快速探路',
     durationMs: 30 * 60 * 1000,
     targetEventCount: 6,
-    description: '30 分钟，安排 6 个关键事件，适合快速看第一反应。',
+    description: '先跑最低 30 分钟小镇时间，快速建立第一批反应证据；不足时继续自动补事件。',
   },
   {
     id: 'standard',
-    label: '标准演化',
+    label: '自动演化',
     durationMs: 60 * 60 * 1000,
     targetEventCount: 12,
-    description: '1 小时，安排 12 个事件，覆盖压力、沟通和后续选择。',
+    description: '默认策略。最低观察 1 小时小镇时间，直到答案位置足够明确再形成阶段结论。',
   },
   {
     id: 'long',
-    label: '长时自定义',
+    label: '长期观察',
     durationMs: 2 * 60 * 60 * 1000,
     targetEventCount: 20,
-    description: '2-8 小时自定义，事件至少 20 个起，用来检查稳定性。',
+    description: '2-8 小时最低观察窗口，用来检验长期稳定性、生活节奏和关系反馈。',
   },
 ] as const;
 
@@ -64,7 +64,7 @@ const fastExperimentScale = {
   label: '快速验收',
   durationMs: 2 * 60 * 1000,
   targetEventCount: 4,
-  description: '2 分钟，专用于本地端到端验收完整演化闭环。',
+  description: '2 分钟，仅用于本地端到端验收，不代表真实观察策略。',
 } as const;
 
 type ExperimentScale = (typeof baseExperimentScales)[number] | typeof fastExperimentScale;
@@ -805,11 +805,21 @@ export default function MbtiExperiment() {
         .map((event) => event.mbtiEventId)
         .filter((eventId): eventId is Id<'mbtiEvents'> => Boolean(eventId)),
     );
-    const allEventsRecorded = experimentState.events.every((event) => recordedEventIds.has(event._id));
-    if (!allEventsRecorded) {
+    const recordedEvents = experimentState.events.filter((event) => recordedEventIds.has(event._id));
+    const respondedEventIds = new Set(
+      experimentState.userResponses
+        .filter((response) => response.responseStatus === 'responded')
+        .map((response) => response.mbtiEventId),
+    );
+    const testedVariables = new Set(
+      recordedEvents
+        .map((event) => event.testedVariable)
+        .filter((variable): variable is string => Boolean(variable)),
+    );
+    if (recordedEvents.length < 3 || respondedEventIds.size < 2 || testedVariables.size < 3) {
       return;
     }
-    const attemptKey = `${experiment._id}:${recordedEventIds.size}`;
+    const attemptKey = `${experiment._id}:${recordedEvents.length}:${respondedEventIds.size}:${testedVariables.size}`;
     if (finalizeAttemptRef.current === attemptKey) {
       return;
     }
@@ -824,6 +834,7 @@ export default function MbtiExperiment() {
     experimentState?.experiment,
     experimentState?.events,
     experimentState?.socialEvents,
+    experimentState?.userResponses,
     finalizeExperimentIfReady,
   ]);
 
@@ -1297,13 +1308,13 @@ export default function MbtiExperiment() {
                     小时
                   </label>
                   <strong>
-                    {customDurationHours} 小时 · {observationEventCount(experimentScale, customDurationHours)} 个事件
+                    最低观察 {customDurationHours} 小时 · 动态探针预算约 {observationEventCount(experimentScale, customDurationHours)} 个
                   </strong>
                 </div>
               )}
               <p className="mbti-scale-summary">
-                当前会运行 {formatDuration(observationDurationMs(experimentScale, customDurationHours))}，
-                安排 {observationEventCount(experimentScale, customDurationHours)} 个计划事件。
+                当前策略：最低观察 {formatDuration(observationDurationMs(experimentScale, customDurationHours))}；
+                系统按证据缺口动态生成事件，约 {observationEventCount(experimentScale, customDurationHours)} 个探针预算，不会因为时间到就强行结束。
               </p>
             </div>
             <button className="mbti-action" onClick={prepareTownEvolution} type="button">
@@ -1354,35 +1365,52 @@ export default function MbtiExperiment() {
               </div>
             </div>
             {defaultTown?.town._id && (
-              <div className="mbti-timeline-controls" aria-label="小镇时间线控制">
-                <span>时间线推进</span>
-                <button
-                  disabled={timelineAdvanceState === 'running'}
-                  onClick={() => void advanceTownTimeline(0)}
-                  type="button"
-                >
-                  跑一次居民自治
-                </button>
-                <button
-                  disabled={timelineAdvanceState === 'running'}
-                  onClick={() => void advanceTownTimeline(1)}
-                  type="button"
-                >
-                  快进到明天
-                </button>
-                <button
-                  disabled={timelineAdvanceState === 'running'}
-                  onClick={() => void advanceTownTimeline(7)}
-                  type="button"
-                >
-                  快进 7 天
-                </button>
+              <div className="mbti-timeline-controls" aria-label="小镇时间线自动推进状态">
+                <div className="mbti-timeline-status">
+                  <span>时间线自动推进</span>
+                  <strong>
+                    {timelineAdvanceState === 'running'
+                      ? '正在手动推进'
+                      : timelineAdvanceState === 'error'
+                      ? '上次手动推进失败'
+                      : '系统会按小镇节奏自动处理'}
+                  </strong>
+                  <em>
+                    居民生活/事业线会在后台持续推进；用户提问相关事件会在到达合适时间点后自动触发。
+                  </em>
+                </div>
+                <details className="mbti-timeline-debug">
+                  <summary>调试推进</summary>
+                  <div>
+                    <button
+                      disabled={timelineAdvanceState === 'running'}
+                      onClick={() => void advanceTownTimeline(0)}
+                      type="button"
+                    >
+                      跑一次居民自治
+                    </button>
+                    <button
+                      disabled={timelineAdvanceState === 'running'}
+                      onClick={() => void advanceTownTimeline(1)}
+                      type="button"
+                    >
+                      快进到明天
+                    </button>
+                    <button
+                      disabled={timelineAdvanceState === 'running'}
+                      onClick={() => void advanceTownTimeline(7)}
+                      type="button"
+                    >
+                      快进 7 天
+                    </button>
+                  </div>
+                </details>
                 <em>
                   {timelineAdvanceState === 'running'
                     ? '推进中...'
                     : timelineAdvanceState === 'error'
                     ? '推进失败，请检查后端'
-                    : '会推进居民自己的生活/事业线，并触发到期事件'}
+                    : '无需手动操作'}
                 </em>
               </div>
             )}
@@ -2486,11 +2514,11 @@ function QuestionGuidanceRail({
     },
     {
       detail: events.length > 0
-        ? `已安排 ${events.length} 个计划事件；下一项：${nextEvent?.title ?? '等待证据整理'}。`
+        ? `当前已生成 ${events.length} 个观察事件；下一项：${nextEvent?.title ?? '等待生活线和证据缺口判断'}。`
         : '还没有事件，系统会先生成压力、误解或修复窗口。',
       state: events.length > 0 ? 'ready' : 'pending',
-      status: events.length > 0 ? '已完成' : '待生成',
-      title: '排事件',
+      status: events.length > 0 ? '动态生成中' : '待生成',
+      title: '生成事件',
     },
     {
       detail: activeEvent
@@ -2502,11 +2530,11 @@ function QuestionGuidanceRail({
     },
     {
       detail: completed
-        ? '已根据能匹配到的聊天、事件、内心和行为整理结论。'
+        ? '已根据能匹配到的聊天、事件、内心和行为整理阶段结论。'
         : '还缺少足够可对应到事件的证据，当前不能直接下结论。',
       state: completed ? 'ready' : evidencedEvents > 0 ? 'active' : 'pending',
-      status: completed ? '已完成' : '未完成',
-      title: '形成结论',
+      status: completed ? '阶段结论' : '未定位',
+      title: '定位答案',
     },
   ];
   const progressBody = (

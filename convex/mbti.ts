@@ -23,6 +23,9 @@ const MBTI_SCENE_MESSAGE_INTERVAL_MS = 110 * 1000;
 const MBTI_BACKGROUND_WANDER_INTERVAL_MS = 30 * 1000;
 const MBTI_SCENE_EVENT_MIN_GAP_MS = 45 * 1000;
 const MBTI_FINALIZE_AFTER_ALL_EVENTS_DELAY_MS = 10 * 1000;
+const MBTI_MIN_RECORDED_EVENTS_FOR_FINAL_REPORT = 3;
+const MBTI_MIN_USER_RESPONSES_FOR_FINAL_REPORT = 2;
+const MBTI_MIN_TESTED_VARIABLES_FOR_FINAL_REPORT = 3;
 const MBTI_TOWN_DAILY_EVENT_INTERVAL_MS = 60 * 1000;
 const MBTI_FOCUS_CONVERSATION_INTERVAL_MS = 75 * 1000;
 const MBTI_RESIDENT_INTERACTION_INTERVAL_MS = 90 * 1000;
@@ -893,6 +896,34 @@ export function plannedEventsReadyForFinalReport(
   return events.every((event) => eventIdsWithRecords.has(String(event._id)));
 }
 
+export function finalReportReadiness(
+  events: Array<{ _id: unknown; status?: string; testedVariable?: string }>,
+  socialEvents: Array<{ mbtiEventId?: unknown }>,
+  userResponses: Array<{ mbtiEventId?: unknown; responseStatus?: string }>,
+) {
+  const batchRecorded = plannedEventsReadyForFinalReport(
+    events.map((event) => ({ _id: String(event._id) })),
+    socialEvents.map((event) => ({
+      mbtiEventId: event.mbtiEventId ? String(event.mbtiEventId) : undefined,
+    })),
+  );
+  const answerReadiness = answerPositionReadiness(events, socialEvents, userResponses);
+  if (answerReadiness.ready) {
+    return {
+      ...answerReadiness,
+      ready: true,
+      reason: answerReadiness.reason,
+      batchRecorded,
+    };
+  }
+  return {
+    ...answerReadiness,
+    ready: false,
+    reason: batchRecorded ? 'current-batch-recorded-but-answer-not-located' : answerReadiness.reason,
+    batchRecorded,
+  };
+}
+
 export function answerPositionReadiness(
   events: Array<{ _id: unknown; status?: string; testedVariable?: string }>,
   socialEvents: Array<{ mbtiEventId?: unknown }>,
@@ -920,7 +951,10 @@ export function answerPositionReadiness(
   const recordedEventCount = recordedEvents.length;
   const respondedEventCount = respondedEventIds.size;
   const testedVariableCount = testedVariables.size;
-  const ready = recordedEventCount >= 3 && respondedEventCount >= 2 && testedVariableCount >= 3;
+  const ready =
+    recordedEventCount >= MBTI_MIN_RECORDED_EVENTS_FOR_FINAL_REPORT &&
+    respondedEventCount >= MBTI_MIN_USER_RESPONSES_FOR_FINAL_REPORT &&
+    testedVariableCount >= MBTI_MIN_TESTED_VARIABLES_FOR_FINAL_REPORT;
   return {
     ready,
     reason: ready ? 'answer-position-located' : 'answer-position-not-yet-located',
@@ -1586,7 +1620,11 @@ export const recordTriggeredSceneEvent = internalMutation({
         .query('socialEvents')
         .withIndex('by_world_time', (q) => q.eq('worldId', args.worldId))
         .collect();
-      if (plannedEventsReadyForFinalReport(events, socialEvents)) {
+      const userResponses = await ctx.db
+        .query('mbtiUserResponses')
+        .withIndex('experiment_time', (q) => q.eq('experimentId', args.experimentId))
+        .collect();
+      if (finalReportReadiness(events, socialEvents, userResponses).ready) {
         await ctx.scheduler.runAfter(MBTI_FINALIZE_AFTER_ALL_EVENTS_DELAY_MS, internal.mbti.finalizeExperiment, {
           experimentId: args.experimentId,
         });
@@ -3161,20 +3199,15 @@ export const experimentReadyForFinalReport = internalQuery({
         .map((event) => event.mbtiEventId)
         .filter((eventId): eventId is Id<'mbtiEvents'> => Boolean(eventId)),
     );
-    const allEventsRecorded = plannedEventsReadyForFinalReport(events, socialEvents);
-    const answerReadiness = answerPositionReadiness(events, socialEvents, userResponses);
-    const ready = allEventsRecorded || answerReadiness.ready;
+    const readiness = finalReportReadiness(events, socialEvents, userResponses);
     return {
-      ready,
-      reason: allEventsRecorded
-        ? 'all-events-recorded'
-        : answerReadiness.ready
-        ? answerReadiness.reason
-        : 'waiting-event-records',
+      ready: readiness.ready,
+      reason: readiness.reason,
       eventCount: events.length,
       recordedEventCount: events.filter((event) => recordedEventIds.has(event._id)).length,
-      respondedEventCount: answerReadiness.respondedEventCount,
-      testedVariableCount: answerReadiness.testedVariableCount,
+      respondedEventCount: readiness.respondedEventCount,
+      testedVariableCount: readiness.testedVariableCount,
+      batchRecorded: readiness.batchRecorded,
     };
   },
 });

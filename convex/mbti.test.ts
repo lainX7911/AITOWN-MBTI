@@ -9,6 +9,7 @@ import {
   deterministicSeed,
   answerPositionReadiness,
   feedbackTypeFromFit,
+  finalReportReadiness,
   normalizeEventParticipantPlan,
   normalizeObservationDuration,
   plannedEventsReadyForFinalReport,
@@ -170,7 +171,7 @@ describe('MBTI observation duration', () => {
     expect(delays.at(-1)).toBeLessThanOrEqual(oneHourMs - 15 * 1000);
   });
 
-  test('allows final report once every planned event has an event record', () => {
+  test('detects when the current generated event batch has records', () => {
     const events = [
       { _id: 'event-1' },
       { _id: 'event-2' },
@@ -187,6 +188,26 @@ describe('MBTI observation duration', () => {
       { mbtiEventId: 'event-3' },
       { mbtiEventId: undefined },
     ])).toBe(true);
+  });
+
+  test('does not finalize just because a short current batch has records', () => {
+    const events = [
+      { _id: 'event-1', status: 'observed', testedVariable: '日常安排' },
+      { _id: 'event-2', status: 'observed', testedVariable: '社交融入' },
+    ];
+    const socialEvents = [
+      { mbtiEventId: 'event-1' },
+      { mbtiEventId: 'event-2' },
+    ];
+
+    expect(finalReportReadiness(events as any, socialEvents as any, [])).toEqual({
+      ready: false,
+      reason: 'current-batch-recorded-but-answer-not-located',
+      batchRecorded: true,
+      recordedEventCount: 2,
+      respondedEventCount: 0,
+      testedVariableCount: 2,
+    });
   });
 
   test('allows final report once evidence locates a clear answer position', () => {

@@ -75,9 +75,9 @@ describe('MBTI event progress copy', () => {
       ],
     });
 
-    expect(text).toContain('已触发 2/3 个计划事件');
+    expect(text).toContain('已触发 2/3 个当前事件');
     expect(text).toContain('其中 1 个已进入事件记录');
-    expect(text).toContain('聊天、内心和行为只能挂在这些记录下面');
+    expect(text).toContain('系统会按证据缺口继续生成后续事件');
   });
 
   test('does not count candidate or delayed probes as triggered events', () => {
@@ -113,7 +113,7 @@ describe('MBTI event progress copy', () => {
       records: [],
     });
 
-    expect(text).toContain('已触发 1/4 个计划事件');
+    expect(text).toContain('已触发 1/4 个当前事件');
     expect(text).toContain('其中 0 个已进入事件记录');
   });
 

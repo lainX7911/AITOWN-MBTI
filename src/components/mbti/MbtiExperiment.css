@@ -958,20 +958,63 @@
 .mbti-timeline-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 12px;
   align-items: center;
   padding: 9px 10px;
   border: 1px solid #cbd5e1;
   background: #f8fafc;
 }
 
-.mbti-timeline-controls span {
+.mbti-timeline-status {
+  display: grid;
+  gap: 3px;
+  min-width: min(100%, 360px);
+}
+
+.mbti-timeline-status span {
   color: #0f172a;
   font-size: 12px;
   font-weight: 900;
 }
 
-.mbti-timeline-controls button {
+.mbti-timeline-status strong {
+  color: #172033;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.mbti-timeline-status em {
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.mbti-timeline-debug {
+  margin-left: auto;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.mbti-timeline-debug summary {
+  cursor: pointer;
+}
+
+.mbti-timeline-debug div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.mbti-timeline-debug:not([open]) div {
+  display: none;
+}
+
+.mbti-timeline-debug button {
   min-height: 31px;
   border: 1px solid #94a3b8;
   background: #fff;
@@ -982,18 +1025,17 @@
   cursor: pointer;
 }
 
-.mbti-timeline-controls button:hover:not(:disabled) {
+.mbti-timeline-debug button:hover:not(:disabled) {
   border-color: #0f766e;
   color: #0f766e;
 }
 
-.mbti-timeline-controls button:disabled {
+.mbti-timeline-debug button:disabled {
   cursor: wait;
   opacity: 0.62;
 }
 
-.mbti-timeline-controls em {
-  margin-left: auto;
+.mbti-timeline-controls > em {
   color: #475569;
   font-size: 12px;
   font-style: normal;

@@ -283,10 +283,10 @@ export function guidanceResultText({
   const recordsByKey = eventRecordMap(records);
   const evidencedEvents = events.filter((event) => recordsByKey.has(event._id ?? '') || recordsByKey.has(event.title)).length;
   if (completed) {
-    return `演化已结束。${evidencedEvents}/${events.length || 0} 个计划事件有对应记录，其余不能当作行为证据。`;
+    return `已形成阶段结论。${evidencedEvents}/${events.length || 0} 个事件有对应记录；结论来自已定位的答案位置，不是因为固定时长耗尽。`;
   }
   if (triggeredEvents > 0) {
-    return `已触发 ${triggeredEvents}/${events.length || 0} 个计划事件，其中 ${evidencedEvents} 个已进入事件记录。聊天、内心和行为只能挂在这些记录下面作为证据。`;
+    return `已触发 ${triggeredEvents}/${events.length || 0} 个当前事件，其中 ${evidencedEvents} 个已进入事件记录；系统会按证据缺口继续生成后续事件。`;
   }
   if (started) {
     return '演化正在运行，等待第一个计划事件真实触发并进入事件记录。';
