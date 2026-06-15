@@ -4,6 +4,10 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { config as loadDotEnv } from 'dotenv';
+
+loadDotEnv({ path: '.env.local' });
+loadDotEnv();
 
 const LOCAL_BACKEND_INSTANCE_SECRET =
   '4361726e697461732c206c69746572616c6c79206d65616e696e6720226c6974';
