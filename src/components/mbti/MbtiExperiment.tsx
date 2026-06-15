@@ -2578,10 +2578,12 @@ function QuestionGuidanceRail({
     },
     {
       detail: completed
-        ? '已根据能匹配到的聊天、事件、内心和行为整理阶段结论。'
+        ? '已达到整体观察标准，并根据聊天、事件、内心和行为整理整体结论。'
+        : evidencedEvents > 0
+        ? '已有阶段性判断，但整体结论还要等目标事件、待触发事件和关键维度全部达标。'
         : '还缺少足够可对应到事件的证据，当前不能直接下结论。',
       state: completed ? 'ready' : evidencedEvents > 0 ? 'active' : 'pending',
-      status: completed ? '阶段结论' : '未定位',
+      status: completed ? '整体结论' : evidencedEvents > 0 ? '阶段判断' : '未定位',
       title: '定位答案',
     },
   ];
@@ -2757,7 +2759,7 @@ function QuestionGuidanceRail({
         <p>
           <b>{recordedEvents}/{events.length || 0}</b> 有记录
           <b>{evidencedEvents}</b> 有证据
-          <b>{completed ? '已完成' : '进行中'}</b>
+          <b>{completed ? '整体完成' : evidencedEvents > 0 ? '阶段观察中' : '进行中'}</b>
         </p>
       </div>
       {completed ? (

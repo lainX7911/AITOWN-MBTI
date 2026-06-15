@@ -276,7 +276,12 @@ export const planAndCreateSceneRequest = action({
       throw new Error(`启动前关键问题不存在或不合格：本轮需要 ${requiredStartupQuestionCount} 个关键问题，不会使用兜底模板。`);
     }
     const answers = cleanStartupAnswers(args.startupAnswers, skeleton.startupQuestions);
-    const runVariant = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+    const runVariant = stablePlanningVariant({
+      question: args.question,
+      targetEventCount: args.targetEventCount,
+      userEntryMode: args.userEntryMode,
+      startupAnswers: answers,
+    });
     const authenticityFeedback = await ctx.runQuery(makeFunctionReference<'query'>('mbti:collectTownAuthenticityFeedback'), {
       townId: args.townId,
       question: args.question,
@@ -665,7 +670,7 @@ async function planQuestionEvents(
             '如果用户问题涉及某类关系、职业、钱、健康、住处、身份或长期计划，eventPlans 必须围绕这个问题自身的现实变量设计，不要替换成无关的小事务。',
             '如果用户是在考虑未来可能性，只能把相关对象写成待验证、待认识、待选择或待确认的对象，不能写成已经存在的事实。',
             'eventPlans 必须尽可能离散：每个事件绑定一个不同 analysisDimensions 维度，并使用不同地点细分、不同阻断类型。不要连续使用同一母题。',
-            '本轮入镇有一个扰动指纹。即使用户问题和 MBTI 结果与上一轮完全相同，也必须根据扰动指纹改变事件地点顺序、阻断类型、居民介入方式和前 8 个事件的侧重点，避免每次重新进入小镇看到同一组事件。',
+            '本轮入镇有一个稳定指纹。相同用户问题、启动回答和观察规模应保持核心事件轴稳定；只能在措辞和居民生活细节上有小幅变化，避免同题重复演化得出相反结论。',
             '前 8 个事件必须覆盖多个与本题相关的生活域，不要把事件都写成同一种普通事务。',
             `eventPlans 本批只输出 ${candidateCount} 个候选事件，宁可少而具体，不要为了凑数输出设施任务。`,
             'eventPlans 的 observationAxis 必须逐项对应 analysisDimensions 中的不同条目；首批事件不要重复 observationAxis，补批次优先使用尚未覆盖的 observationAxis。',
@@ -680,7 +685,7 @@ async function planQuestionEvents(
           content: [
             `用户问题：${question}`,
             `生成尝试：第 ${attempt} 次，第 ${batch} 批。当前累计需要至少 ${requiredEventPlanCount} 个合格事件，本批请输出 ${candidateCount} 个候选。`,
-            `本轮入镇扰动指纹：${runVariant}`,
+            `本轮入镇稳定指纹：${runVariant}`,
             `已接受事件，补批次必须避开：\n${existingPlanText}`,
             `已经合格的观察维度：${skeleton.analysisDimensions.join('；')}`,
             `问题结构：${formatDecisionStructureForPrompt(skeleton.decisionStructure)}`,
@@ -715,7 +720,7 @@ async function planQuestionEvents(
           ].join('\n'),
         },
       ],
-      temperature: 0.55,
+      temperature: 0.25,
       timeoutMs: 180_000,
     });
   const parsed = parsePlannerJson(content);
@@ -741,6 +746,37 @@ async function planQuestionEvents(
     eventPlans: filteredEventPlans,
     issues: addedCount > 0 ? [] : ['本批事件与已接受事件重复，未增加新事件'],
   };
+}
+
+function stablePlanningVariant(args: {
+  question: string;
+  targetEventCount: number | undefined;
+  userEntryMode: string;
+  startupAnswers: StartupAnswerInput[];
+}) {
+  const answerText = args.startupAnswers
+    .map((answer) => `${normalizePlanningSeedPart(answer.question)}=${normalizePlanningSeedPart(answer.answer)}:${normalizePlanningSeedPart(answer.note ?? '')}`)
+    .join('|');
+  const raw = [
+    normalizePlanningSeedPart(args.question),
+    `target=${Math.floor(args.targetEventCount ?? 6)}`,
+    `entry=${args.userEntryMode}`,
+    answerText,
+  ].join('::');
+  return `stable-${stableHash(raw).toString(36)}`;
+}
+
+function normalizePlanningSeedPart(value: string) {
+  return value.trim().replace(/\s+/g, ' ').slice(0, 240);
+}
+
+function stableHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 export function formatAuthenticityFeedbackForPrompt(feedback: AuthenticityFeedbackInput[] | undefined) {

@@ -10,6 +10,7 @@ import {
   answerPositionReadiness,
   feedbackTypeFromFit,
   finalReportReadiness,
+  minimumFinalReportEventCount,
   normalizeEventParticipantPlan,
   normalizeObservationDuration,
   plannedEventsReadyForFinalReport,
@@ -207,12 +208,47 @@ describe('MBTI observation duration', () => {
 
     expect(finalReportReadiness(events as any, socialEvents as any, [])).toEqual({
       ready: false,
-      reason: 'current-batch-recorded-but-answer-not-located',
+      reason: 'minimum-evidence-floor-not-met',
       batchRecorded: true,
+      hasOpenProbe: false,
+      minimumRecordedEvents: 3,
       recordedEventCount: 2,
       respondedEventCount: 0,
       testedVariableCount: 2,
     });
+  });
+
+  test('does not finalize while a generated timeline event is still waiting', () => {
+    const events = [
+      { _id: 'event-1', status: 'responded', testedVariable: '钱' },
+      { _id: 'event-2', status: 'responded', testedVariable: '时间' },
+      { _id: 'event-3', status: 'observed', testedVariable: '关系' },
+      { _id: 'event-4', status: 'candidate', testedVariable: '未来' },
+    ];
+    const socialEvents = [
+      { mbtiEventId: 'event-1' },
+      { mbtiEventId: 'event-2' },
+      { mbtiEventId: 'event-3' },
+    ];
+    const userResponses = [
+      { mbtiEventId: 'event-1', responseStatus: 'responded' },
+      { mbtiEventId: 'event-2', responseStatus: 'responded' },
+    ];
+
+    expect(finalReportReadiness(events as any, socialEvents as any, userResponses as any, 3)).toMatchObject({
+      ready: false,
+      reason: 'open-timeline-event-still-running',
+      recordedEventCount: 3,
+      respondedEventCount: 2,
+      testedVariableCount: 3,
+      hasOpenProbe: true,
+    });
+  });
+
+  test('raises the minimum evidence floor from the selected event target', () => {
+    expect(minimumFinalReportEventCount(4)).toBe(4);
+    expect(minimumFinalReportEventCount(12)).toBe(6);
+    expect(minimumFinalReportEventCount(20)).toBe(10);
   });
 
   test('allows final report once evidence locates a clear answer position', () => {
@@ -241,7 +277,7 @@ describe('MBTI observation duration', () => {
     });
   });
 
-  test('varies visible planned events when the same question starts a new town run', () => {
+  test('keeps visible planned events stable when the same question starts a new town run', () => {
     const dimensions = ['时间', '社交', '家庭', '兴趣', '健康', '价值', '变化', '金钱'];
     const focus = {
       coreQuestion: '同一个问题',
@@ -285,7 +321,7 @@ describe('MBTI observation duration', () => {
       [],
       [{ name: '林遥' }] as any,
       'cafe',
-      deterministicSeed('同一个问题', 'INTJ', 'scene-a', '1000'),
+      deterministicSeed('同一个问题', 'INTJ', 'cafe', 'stable-focus'),
       6,
       focus,
     );
@@ -294,12 +330,12 @@ describe('MBTI observation duration', () => {
       [],
       [{ name: '林遥' }] as any,
       'cafe',
-      deterministicSeed('同一个问题', 'INTJ', 'scene-b', '2000'),
+      deterministicSeed('同一个问题', 'INTJ', 'cafe', 'stable-focus'),
       6,
       focus,
     );
 
-    expect(firstRun.map((event) => event.title)).not.toEqual(secondRun.map((event) => event.title));
+    expect(firstRun.map((event) => event.title)).toEqual(secondRun.map((event) => event.title));
     expect(firstRun).toHaveLength(6);
     expect(secondRun).toHaveLength(6);
   });

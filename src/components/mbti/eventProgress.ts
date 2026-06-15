@@ -283,7 +283,7 @@ export function guidanceResultText({
   const recordsByKey = eventRecordMap(records);
   const evidencedEvents = events.filter((event) => recordsByKey.has(event._id ?? '') || recordsByKey.has(event.title)).length;
   if (completed) {
-    return `已形成阶段结论。${evidencedEvents}/${events.length || 0} 个事件有对应记录；结论来自已定位的答案位置，不是因为固定时长耗尽。`;
+    return `已形成整体结论。${evidencedEvents}/${events.length || 0} 个事件有对应记录；结论来自已完成的观察标准，不是因为固定时长耗尽。`;
   }
   if (triggeredEvents > 0) {
     return `已触发 ${triggeredEvents}/${events.length || 0} 个当前事件，其中 ${evidencedEvents} 个已进入事件记录；系统会按证据缺口继续生成后续事件。`;

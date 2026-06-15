@@ -80,6 +80,31 @@ describe('MBTI event progress copy', () => {
     expect(text).toContain('系统会按证据缺口继续生成后续事件');
   });
 
+  test('labels completed runs as overall conclusions, not stage conclusions', () => {
+    const text = guidanceResultText({
+      completed: true,
+      started: true,
+      events: [
+        {
+          _id: 'event-1',
+          title: '家庭责任',
+          description: '观察家庭责任。',
+          status: 'responded',
+        },
+      ],
+      records: [
+        {
+          mbtiEventId: 'event-1',
+          title: '家庭责任',
+          description: '用户回应了家庭责任边界。',
+        },
+      ],
+    });
+
+    expect(text).toContain('整体结论');
+    expect(text).not.toContain('阶段结论');
+  });
+
   test('does not count candidate or delayed probes as triggered events', () => {
     const text = guidanceResultText({
       completed: false,

@@ -426,8 +426,8 @@ export const createExperiment = mutation({
     const eventSeed = deterministicSeed(
       args.question,
       args.profile.code,
-      args.sceneRequestId ?? '',
-      String(now),
+      args.sceneLocationKey ?? '',
+      stableQuestionFocusSeed(args.questionFocus),
     );
     const experimentId = await ctx.db.insert('mbtiExperiments', {
       createdAt: now,
@@ -902,6 +902,7 @@ export function finalReportReadiness(
   events: Array<{ _id: unknown; status?: string; testedVariable?: string }>,
   socialEvents: Array<{ mbtiEventId?: unknown }>,
   userResponses: Array<{ mbtiEventId?: unknown; responseStatus?: string }>,
+  minimumRecordedEvents = MBTI_MIN_RECORDED_EVENTS_FOR_FINAL_REPORT,
 ) {
   const batchRecorded = plannedEventsReadyForFinalReport(
     events.map((event) => ({ _id: String(event._id) })),
@@ -910,20 +911,38 @@ export function finalReportReadiness(
     })),
   );
   const answerReadiness = answerPositionReadiness(events, socialEvents, userResponses);
-  if (answerReadiness.ready) {
+  const hasOpenProbe = events.some((event) => event.status && OPEN_TIMELINE_PROBE_STATUSES.has(event.status));
+  const hasEnoughRecordedEvents = answerReadiness.recordedEventCount >= minimumRecordedEvents;
+  if (answerReadiness.ready && hasEnoughRecordedEvents && !hasOpenProbe) {
     return {
       ...answerReadiness,
       ready: true,
       reason: answerReadiness.reason,
       batchRecorded,
+      hasOpenProbe,
+      minimumRecordedEvents,
     };
   }
+  const reason = hasOpenProbe
+    ? 'open-timeline-event-still-running'
+    : !hasEnoughRecordedEvents
+    ? 'minimum-evidence-floor-not-met'
+    : batchRecorded
+    ? 'current-batch-recorded-but-answer-not-located'
+    : answerReadiness.reason;
   return {
     ...answerReadiness,
     ready: false,
-    reason: batchRecorded ? 'current-batch-recorded-but-answer-not-located' : answerReadiness.reason,
+    reason,
     batchRecorded,
+    hasOpenProbe,
+    minimumRecordedEvents,
   };
+}
+
+export function minimumFinalReportEventCount(targetEventCount: number | undefined) {
+  const target = Math.max(1, Math.round(targetEventCount ?? 8));
+  return Math.min(target, Math.max(4, Math.ceil(target * 0.5)));
 }
 
 export function answerPositionReadiness(
@@ -1662,7 +1681,8 @@ export const recordTriggeredSceneEvent = internalMutation({
         .query('mbtiUserResponses')
         .withIndex('experiment_time', (q) => q.eq('experimentId', args.experimentId))
         .collect();
-      if (finalReportReadiness(events, socialEvents, userResponses).ready) {
+      const minimumRecordedEvents = minimumFinalReportEventCount(experiment.observation.targetEventCount);
+      if (finalReportReadiness(events, socialEvents, userResponses, minimumRecordedEvents).ready) {
         await ctx.scheduler.runAfter(MBTI_FINALIZE_AFTER_ALL_EVENTS_DELAY_MS, internal.mbti.finalizeExperiment, {
           experimentId: args.experimentId,
         });
@@ -3053,6 +3073,12 @@ export const finalizeExperiment = internalAction({
     experimentId: v.id('mbtiExperiments'),
   },
   handler: async (ctx, args) => {
+    const readiness = await ctx.runQuery(experimentReadyForFinalReportRef, {
+      experimentId: args.experimentId,
+    }) as { ready: boolean };
+    if (!readiness.ready) {
+      return null;
+    }
     const reportResult = await ctx.runAction(buildExperimentReportNodeRef, args) as {
       report: MbtiReport;
       status: Doc<'mbtiExperiments'>['status'];
@@ -3253,7 +3279,8 @@ export const experimentReadyForFinalReport = internalQuery({
         .map((event) => event.mbtiEventId)
         .filter((eventId): eventId is Id<'mbtiEvents'> => Boolean(eventId)),
     );
-    const readiness = finalReportReadiness(events, socialEvents, userResponses);
+    const minimumRecordedEvents = minimumFinalReportEventCount(experiment.observation.targetEventCount);
+    const readiness = finalReportReadiness(events, socialEvents, userResponses, minimumRecordedEvents);
     return {
       ready: readiness.ready,
       reason: readiness.reason,
@@ -3262,6 +3289,8 @@ export const experimentReadyForFinalReport = internalQuery({
       respondedEventCount: readiness.respondedEventCount,
       testedVariableCount: readiness.testedVariableCount,
       batchRecorded: readiness.batchRecorded,
+      hasOpenProbe: readiness.hasOpenProbe,
+      minimumRecordedEvents: readiness.minimumRecordedEvents,
     };
   },
 });
@@ -5220,6 +5249,20 @@ export function buildSeededEvents(
     });
   }
   throw new Error('缺少合格的动态情境探针事件计划；本轮不会使用默认事件。');
+}
+
+function stableQuestionFocusSeed(focus: QuestionFocusInput | undefined) {
+  if (!focus) {
+    return '';
+  }
+  return [
+    focus.coreQuestion,
+    focus.observationGoal,
+    focus.analysisDimensions?.join('|') ?? '',
+    focus.eventPlans
+      ?.map((plan) => `${plan.title}:${plan.observationAxis ?? ''}:${plan.trigger}`)
+      .join('|') ?? '',
+  ].join('::');
 }
 
 function selectSeededEventPlans<T extends { title: string; trigger: string }>(
