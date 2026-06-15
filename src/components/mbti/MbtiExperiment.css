@@ -2774,29 +2774,30 @@
   position: relative;
   display: inline-flex;
   align-items: flex-start;
-  margin-top: 10px;
+  margin-top: 6px;
 }
 
 .mbti-calibration-popover > .mbti-calibration-chip {
-  min-height: 34px;
-  border: 1px solid #0f172a;
-  background: #0f172a;
-  color: #f8fafc;
-  padding: 7px 13px;
-  font-size: 13px;
-  font-weight: 900;
+  min-height: 24px;
+  border: 1px solid rgba(15, 118, 110, 0.36);
+  background: rgba(240, 253, 250, 0.76);
+  color: #0f766e;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
   cursor: pointer;
-  box-shadow: 0 2px 0 rgba(15, 23, 42, 0.16);
+  box-shadow: none;
 }
 
 .mbti-calibration-popover:has(.mbti-user-response-panel[data-saved='true']) > .mbti-calibration-chip {
-  background: #0f766e;
-  border-color: #0f766e;
+  background: rgba(15, 118, 110, 0.1);
+  border-color: rgba(15, 118, 110, 0.42);
+  color: #0f766e;
 }
 
 .mbti-calibration-popover > .mbti-calibration-chip::after {
-  content: ' ↗';
-  color: #93c5fd;
+  content: '';
 }
 
 .mbti-calibration-popover:hover .mbti-user-response-panel,
@@ -2810,7 +2811,7 @@
   top: calc(100% + 8px);
   left: 0;
   width: min(460px, calc(100vw - 44px));
-  max-height: min(560px, calc(100vh - 140px));
+  max-height: min(640px, calc(100vh - 96px));
   overflow: auto;
   display: grid;
   gap: 10px;
@@ -2883,12 +2884,51 @@
   padding: 8px 10px;
 }
 
+.mbti-simulated-self ul {
+  display: grid;
+  gap: 6px;
+  max-height: 156px;
+  margin: 0;
+  overflow: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.mbti-simulated-self li {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.mbti-simulated-self li b {
+  color: #0f766e;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.5;
+}
+
 .mbti-simulated-self p {
   margin: 0;
   color: #0f172a;
   font-size: 13px;
   font-weight: 800;
   line-height: 1.5;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.mbti-simulated-self > p {
+  display: block;
+}
+
+.mbti-simulated-self em {
+  color: #64748b;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .mbti-response-options {
@@ -2899,13 +2939,13 @@
 
 .mbti-response-options button,
 .mbti-response-actions button {
-  min-height: 34px;
+  min-height: 30px;
   border: 1px solid #cbd5e1;
   background: #fff;
   color: #0f172a;
-  padding: 7px 10px;
-  font-size: 12px;
-  font-weight: 900;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 800;
   cursor: pointer;
 }
 
@@ -2952,7 +2992,7 @@
 }
 
 .mbti-response-actions button {
-  min-width: 72px;
+  min-width: 60px;
   border-color: #0f172a;
   background: #0f172a;
   color: #f8fafc;

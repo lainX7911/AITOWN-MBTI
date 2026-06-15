@@ -22,6 +22,32 @@ export type TownActivityStreamItem = {
   sourceReason?: string;
 };
 
+export type ResidentDevelopmentMetricInput = {
+  status?: string;
+  lifeProfile?: {
+    stress: number;
+    economy: number;
+    career: number;
+    social: number;
+    health: number;
+    updatedAt?: number;
+  };
+  autonomyPlan?: {
+    updatedAt: number;
+  };
+};
+
+export type TownResidentDevelopmentMetrics = {
+  activeResidentCount: number;
+  profiledResidentCount: number;
+  recentlyChangedResidentCount: number;
+  highPressureResidentCount: number;
+  stagnantResidentCount: number;
+  averageStress: number;
+  averageSupport: number;
+  status: 'developing' | 'watching_pressure' | 'stagnant' | 'unprofiled';
+};
+
 export function buildTownActivityStream(args: {
   memories: TownMemoryLike[];
   residentNameByKey: Map<string, string>;
@@ -42,6 +68,51 @@ export function buildTownActivityStream(args: {
       occurredAt: memory.updatedAt,
       sourceReason: memory.sourceReason,
     }));
+}
+
+export function buildResidentDevelopmentMetrics(args: {
+  residents: ResidentDevelopmentMetricInput[];
+  now: number;
+  recentWindowMs?: number;
+}): TownResidentDevelopmentMetrics {
+  const activeResidents = args.residents.filter((resident) => resident.status !== 'inactive');
+  const recentWindowMs = args.recentWindowMs ?? 24 * 60 * 60 * 1000;
+  const profiledResidents = activeResidents.filter((resident) => resident.lifeProfile);
+  const recentlyChangedResidentCount = activeResidents.filter((resident) => {
+    const updatedAt = Math.max(resident.lifeProfile?.updatedAt ?? 0, resident.autonomyPlan?.updatedAt ?? 0);
+    return updatedAt > 0 && args.now - updatedAt <= recentWindowMs;
+  }).length;
+  const highPressureResidentCount = activeResidents.filter((resident) =>
+    (resident.lifeProfile?.stress ?? 0) >= 70 ||
+    (resident.lifeProfile ? resident.lifeProfile.economy < 35 || resident.lifeProfile.social < 35 || resident.lifeProfile.health < 35 : false),
+  ).length;
+  const stagnantResidentCount = activeResidents.filter((resident) => {
+    const updatedAt = Math.max(resident.lifeProfile?.updatedAt ?? 0, resident.autonomyPlan?.updatedAt ?? 0);
+    return updatedAt === 0 || args.now - updatedAt > recentWindowMs * 3;
+  }).length;
+  const averageStress = average(profiledResidents.map((resident) => resident.lifeProfile?.stress ?? 0));
+  const averageSupport = average(profiledResidents.map((resident) => {
+    const profile = resident.lifeProfile!;
+    return (profile.economy + profile.career + profile.social + profile.health) / 4;
+  }));
+  const status: TownResidentDevelopmentMetrics['status'] =
+    profiledResidents.length === 0
+      ? 'unprofiled'
+      : highPressureResidentCount >= Math.max(1, Math.ceil(activeResidents.length * 0.25))
+      ? 'watching_pressure'
+      : recentlyChangedResidentCount === 0 || stagnantResidentCount > activeResidents.length * 0.5
+      ? 'stagnant'
+      : 'developing';
+  return {
+    activeResidentCount: activeResidents.length,
+    profiledResidentCount: profiledResidents.length,
+    recentlyChangedResidentCount,
+    highPressureResidentCount,
+    stagnantResidentCount,
+    averageStress: Math.round(averageStress),
+    averageSupport: Math.round(averageSupport),
+    status,
+  };
 }
 
 export type TownReflectionCandidate = {
@@ -113,6 +184,13 @@ function compactReflectionSeed(text: string) {
     .split(/(?<=[。！？!?])\s*/)[0]
     ?.trim() ?? '';
   return firstSentence.length > 56 ? `${firstSentence.slice(0, 55)}…` : firstSentence;
+}
+
+function average(values: number[]) {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 function activityKind(sourceKind: TownMemoryLike['sourceKind']): TownActivityStreamItem['kind'] {

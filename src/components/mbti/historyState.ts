@@ -6,6 +6,8 @@ export type HistoryRunStatus =
   | 'complete'
   | 'failed';
 
+export type MainExperimentStep = 'test' | 'question' | 'observe' | 'history';
+
 export type StaleHistoryEntry = {
   createdAt: number;
   error?: string;
@@ -34,4 +36,11 @@ export function settleStaleCreatingEntry<T extends StaleHistoryEntry>(
     error: timeoutMessage,
     status: 'failed',
   };
+}
+
+export function normalizeStoredStep(value: unknown): MainExperimentStep {
+  if (value === 'question' || value === 'observe' || value === 'history') {
+    return value;
+  }
+  return 'test';
 }

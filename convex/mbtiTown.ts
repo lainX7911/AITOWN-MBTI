@@ -10,7 +10,7 @@ import {
   selectScene,
   UserEntryMode,
 } from '../data/mbtiPersistentTown';
-import { buildTownActivityStream } from './mbtiTownObservation';
+import { buildResidentDevelopmentMetrics, buildTownActivityStream } from './mbtiTownObservation';
 import { compactAutonomyContext } from './mbtiTownAutonomy';
 
 const DEFAULT_TOWN_SLUG = 'evergreen-mbti-town';
@@ -983,6 +983,10 @@ async function townCounts(ctx: QueryCtx | MutationCtx, townId: Id<'mbtiTownProfi
             currentIntent: resident.autonomyPlan?.intent,
           };
         }),
+      residentDevelopmentMetrics: buildResidentDevelopmentMetrics({
+        residents,
+        now: Date.now(),
+      }),
       pressureRelationships: relationships
         .sort(
           (a, b) =>

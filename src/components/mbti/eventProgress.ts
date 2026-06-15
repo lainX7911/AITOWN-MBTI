@@ -205,6 +205,20 @@ export function eventSourceSummaryText(originCounts: {
   return parts.join(' · ');
 }
 
+export function correctionEvidencePreviewItems(args: {
+  messages?: string[];
+  behaviors?: string[];
+  maxItems?: number;
+}) {
+  const maxItems = Math.max(1, args.maxItems ?? 4);
+  return [
+    ...(args.messages ?? []).map((text) => ({ kind: '聊天', text, title: `聊天：${text}` })),
+    ...(args.behaviors ?? []).map((text) => ({ kind: '动作', text, title: `动作：${text}` })),
+  ]
+    .filter((item) => item.text.trim().length > 0)
+    .slice(0, maxItems);
+}
+
 export function compactText(text: string, maxLength: number) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }

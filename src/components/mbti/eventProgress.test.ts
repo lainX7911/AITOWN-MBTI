@@ -1,4 +1,5 @@
 import {
+  correctionEvidencePreviewItems,
   eventResultSummary,
   eventResponseOptions,
   eventResponsePrompt,
@@ -262,6 +263,20 @@ describe('MBTI event progress copy', () => {
       calibration: 2,
       other: 0,
     })).toBe('初始 1 · 时间线 12 · 用户纠正 2');
+  });
+
+  test('prioritizes chat evidence before action evidence in correction previews', () => {
+    const items = correctionEvidencePreviewItems({
+      messages: ['我想先问清楚这里有没有误会。'],
+      behaviors: ['放下茶杯起身告辞。'],
+      thoughts: ['我觉得这个场景有点不贴合。'],
+      maxItems: 3,
+    });
+
+    expect(items).toEqual([
+      { kind: '聊天', text: '我想先问清楚这里有没有误会。', title: '聊天：我想先问清楚这里有没有误会。' },
+      { kind: '动作', text: '放下茶杯起身告辞。', title: '动作：放下茶杯起身告辞。' },
+    ]);
   });
 
   test('extracts concrete plan sections for the combined plan and evidence card', () => {

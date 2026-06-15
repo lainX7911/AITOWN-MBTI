@@ -21,6 +21,7 @@ import {
 import { RolePreset, TestAnswer } from './types';
 import {
   compactText,
+  correctionEvidencePreviewItems,
   eventSourceSummaryText,
   eventStatusLabel,
   eventTimelineReasonText,
@@ -30,7 +31,7 @@ import {
   shouldShowEventCorrectionControls,
   summarizeEventRuntime,
 } from './eventProgress';
-import { settleStaleCreatingEntry } from './historyState';
+import { MainExperimentStep, normalizeStoredStep, settleStaleCreatingEntry } from './historyState';
 import { objectModeHintForQuestion, objectSummaryForQuestion } from './mbtiDisplay';
 import { startupQuestionMaxSelections, toggleStartupOption } from './startupQuestions';
 import { liveTownTimelineNode, simulatedTownDayMs, townTimelineLocationLabel } from './townClock';
@@ -70,7 +71,7 @@ const fastExperimentScale = {
 
 type ExperimentScale = (typeof baseExperimentScales)[number] | typeof fastExperimentScale;
 type TestMode = 'quick' | 'full';
-type Step = 'test' | 'question' | 'observe' | 'history';
+type Step = MainExperimentStep;
 type TownRunStatus = 'draft' | 'creating' | 'awaiting_user_responses' | 'running' | 'complete' | 'failed';
 type ObserveTab = 'chat' | 'thoughts' | 'memories' | 'events';
 
@@ -263,6 +264,7 @@ type StoredExperimentState = {
   experimentScaleId?: string;
   customDurationHours?: number;
   activeSession?: HistoryEntry;
+  activeStep?: Step;
   runStartedAt?: number;
   history?: unknown[];
 };
@@ -639,7 +641,7 @@ export default function MbtiExperiment() {
   const [runStartedAt, setRunStartedAt] = useState<number | null>(storedState.runStartedAt ?? null);
   const [runStatus, setRunStatus] = useState<TownRunStatus>(initialSession?.status ?? 'draft');
   const [history, setHistory] = useState<HistoryEntry[]>(normalizeHistory(storedState.history));
-  const [activeStep, setActiveStep] = useState<Step>('test');
+  const [activeStep, setActiveStep] = useState<Step>(normalizeStoredStep(storedState.activeStep));
   const [observeTab, setObserveTab] = useState<ObserveTab>('chat');
   const [liveExperimentId, setLiveExperimentId] = useState<string | undefined>(undefined);
   const [deletingHistoryId, setDeletingHistoryId] = useState<string | null>(null);
@@ -935,6 +937,7 @@ export default function MbtiExperiment() {
         experimentScaleId: experimentScale.id,
         customDurationHours,
         activeSession: activeSession ?? undefined,
+        activeStep,
         runStartedAt: runStartedAt ?? undefined,
         history,
       } satisfies StoredExperimentState),
@@ -942,6 +945,7 @@ export default function MbtiExperiment() {
   }, [
     activeQuestion,
     activeSession,
+    activeStep,
     answers,
     answersByMode,
     customDurationHours,
@@ -1183,6 +1187,7 @@ export default function MbtiExperiment() {
           activeQuestion,
           rolePresets,
           experimentScaleId: experimentScale.id,
+          activeStep,
           history: [],
         } satisfies StoredExperimentState),
       );
@@ -3072,6 +3077,16 @@ type TownObservationSummary = {
     updatedAt: number;
     currentIntent?: string;
   }>;
+  residentDevelopmentMetrics?: {
+    activeResidentCount: number;
+    profiledResidentCount: number;
+    recentlyChangedResidentCount: number;
+    highPressureResidentCount: number;
+    stagnantResidentCount: number;
+    averageStress: number;
+    averageSupport: number;
+    status: 'developing' | 'watching_pressure' | 'stagnant' | 'unprofiled';
+  };
   pressureRelationships: Array<{
     relationshipId: string;
     residentNames: string[];
@@ -3136,6 +3151,7 @@ function TownObservationDashboard({
 }) {
   const activePlan = observation.activeResidentPlans[0];
   const timelineNode = observation.timeline?.[0];
+  const residentMetrics = observation.residentDevelopmentMetrics;
   const residentDevelopment = observation.residentDevelopment?.[0];
   const pressureRelationship = observation.pressureRelationships[0];
   const recentMemory = observation.recentMemories[0];
@@ -3195,6 +3211,29 @@ function TownObservationDashboard({
             <>
               <strong>等待自治 tick</strong>
               <p>还没有短期居民计划；运行一次自治 tick 后会出现居民主动意图。</p>
+            </>
+          )}
+        </article>
+        <article>
+          <span>发展指标</span>
+          {residentMetrics ? (
+            <>
+              <strong>{townResidentDevelopmentStatusLabel(residentMetrics.status)}</strong>
+              <p>
+                {residentMetrics.recentlyChangedResidentCount} 个居民近期有状态变化；
+                {residentMetrics.highPressureResidentCount} 个居民压力偏高。
+              </p>
+              <small>
+                已建画像 {residentMetrics.profiledResidentCount}/{residentMetrics.activeResidentCount} ·
+                停滞 {residentMetrics.stagnantResidentCount} ·
+                平均压力 {residentMetrics.averageStress} ·
+                平均支撑 {residentMetrics.averageSupport}
+              </small>
+            </>
+          ) : (
+            <>
+              <strong>等待发展指标</strong>
+              <p>居民画像和自治记录累积后，会显示整体发展状态。</p>
             </>
           )}
         </article>
@@ -3449,12 +3488,12 @@ function EventProgressCard({
     .filter((thought) => playerNameById.get(thought.playerId) === '我')
     .map((thought) => thought.text);
   const hasChatEvidence = selfMessages.length > 0;
-  const simulatedSelfReactions = [
-    ...matchedBehaviors.map((behavior) => ({ kind: '动作', text: behavior.text })),
-    ...selfMessages.map((text) => ({ kind: '说法', text })),
-    ...selfThoughts.map((text) => ({ kind: '内心', text })),
-  ].filter(Boolean).slice(0, 3);
-  const primarySimulatedReaction = simulatedSelfReactions[0];
+  const evidencePreviewItems = correctionEvidencePreviewItems({
+    messages: selfMessages,
+    behaviors: matchedBehaviors.map((behavior) => behavior.text),
+    thoughts: selfThoughts,
+    maxItems: 4,
+  });
   const calibrationEventSummary = planned.trigger || compactText(event.description, 120);
   const shouldShowUserResponsePanel =
     shouldShowEventCorrectionControls({
@@ -3668,12 +3707,22 @@ function EventProgressCard({
               <p>{calibrationEventSummary}</p>
             </div>
             <div className="mbti-simulated-self">
-              <span>{primarySimulatedReaction?.kind ?? '模拟反应'}</span>
-              <p>
-                {primarySimulatedReaction
-                  ? compactText(primarySimulatedReaction.text, 120)
-                  : '还没记录到明确发言或动作，可以先指出这个情境哪里不符合真实前提。'}
-              </p>
+              <span>相关证据</span>
+              {evidencePreviewItems.length > 0 ? (
+                <ul>
+                  {evidencePreviewItems.map((item, index) => (
+                    <li key={`${item.kind}-${index}`} title={item.title}>
+                      <b>{item.kind}</b>
+                      <p>{compactText(item.text, 120)}</p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>还没记录到明确聊天或动作，可以先指出这个情境哪里不符合真实前提。</p>
+              )}
+              {!hasChatEvidence && evidencePreviewItems.length > 0 && (
+                <em>本事件暂未匹配到聊天，只看到动作或内心证据。</em>
+              )}
             </div>
             <div className="mbti-response-options" aria-label="判断模拟反应是否像我">
               {[
@@ -3855,6 +3904,21 @@ function townActivityKindLabel(kind: TownObservationSummary['activityStream'][nu
     return '反思整合';
   }
   return '记忆活动';
+}
+
+function townResidentDevelopmentStatusLabel(
+  status: NonNullable<TownObservationSummary['residentDevelopmentMetrics']>['status'],
+) {
+  if (status === 'developing') {
+    return '居民正在发展';
+  }
+  if (status === 'watching_pressure') {
+    return '压力需要观察';
+  }
+  if (status === 'stagnant') {
+    return '部分生活线停滞';
+  }
+  return '画像尚未建立';
 }
 
 function townTimelinePhaseLabel(phase: TownObservationSummary['timeline'][number]['phase']) {

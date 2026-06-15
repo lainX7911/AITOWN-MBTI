@@ -1,5 +1,5 @@
 import { directEventConclusion } from './eventConclusion';
-import { settleStaleCreatingEntry, StaleHistoryEntry } from './historyState';
+import { normalizeStoredStep, settleStaleCreatingEntry, StaleHistoryEntry } from './historyState';
 import { activeFacilityViewportFrame } from '../pixiViewportFrame';
 import { liveTownTimelineNode, townTimelineLocationLabel } from './townClock';
 
@@ -123,6 +123,18 @@ describe('MBTI history status', () => {
 
     expect(entry.status).toBe('failed');
     expect(entry.error).toContain('等待超时');
+  });
+});
+
+describe('MBTI experiment tabs', () => {
+  test('restores a valid stored main tab after reload', () => {
+    expect(normalizeStoredStep('observe')).toBe('observe');
+    expect(normalizeStoredStep('history')).toBe('history');
+  });
+
+  test('falls back to the personality test tab for unknown stored values', () => {
+    expect(normalizeStoredStep('bad-tab')).toBe('test');
+    expect(normalizeStoredStep(undefined)).toBe('test');
   });
 });
 

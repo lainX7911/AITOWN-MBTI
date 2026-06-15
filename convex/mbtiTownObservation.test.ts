@@ -1,6 +1,116 @@
-import { buildTownActivityStream, selectTownReflectionCandidate } from './mbtiTownObservation';
+import {
+  buildResidentDevelopmentMetrics,
+  buildTownActivityStream,
+  selectTownReflectionCandidate,
+} from './mbtiTownObservation';
 
 describe('MBTI town observation activity stream', () => {
+  test('summarizes resident development metrics from life profile updates', () => {
+    const metrics = buildResidentDevelopmentMetrics({
+      now: 10_000,
+      recentWindowMs: 5_000,
+      residents: [
+        {
+          status: 'active',
+          lifeProfile: {
+            stress: 42,
+            economy: 60,
+            career: 58,
+            social: 62,
+            health: 55,
+            updatedAt: 9_000,
+          },
+        },
+        {
+          status: 'active',
+          lifeProfile: {
+            stress: 64,
+            economy: 52,
+            career: 50,
+            social: 48,
+            health: 49,
+            updatedAt: 8_000,
+          },
+        },
+        {
+          status: 'inactive',
+          lifeProfile: {
+            stress: 99,
+            economy: 1,
+            career: 1,
+            social: 1,
+            health: 1,
+            updatedAt: 10_000,
+          },
+        },
+      ],
+    });
+
+    expect(metrics).toMatchObject({
+      activeResidentCount: 2,
+      profiledResidentCount: 2,
+      recentlyChangedResidentCount: 2,
+      highPressureResidentCount: 0,
+      stagnantResidentCount: 0,
+      averageStress: 53,
+      status: 'developing',
+    });
+  });
+
+  test('flags pressure and stagnant resident life lines', () => {
+    const pressure = buildResidentDevelopmentMetrics({
+      now: 20_000,
+      recentWindowMs: 5_000,
+      residents: [
+        {
+          status: 'active',
+          lifeProfile: {
+            stress: 76,
+            economy: 32,
+            career: 48,
+            social: 44,
+            health: 50,
+            updatedAt: 18_000,
+          },
+        },
+        {
+          status: 'active',
+          lifeProfile: {
+            stress: 50,
+            economy: 55,
+            career: 55,
+            social: 55,
+            health: 55,
+            updatedAt: 18_000,
+          },
+        },
+      ],
+    });
+    const stagnant = buildResidentDevelopmentMetrics({
+      now: 40_000,
+      recentWindowMs: 5_000,
+      residents: [
+        {
+          status: 'active',
+          lifeProfile: {
+            stress: 40,
+            economy: 55,
+            career: 55,
+            social: 55,
+            health: 55,
+            updatedAt: 1_000,
+          },
+        },
+        { status: 'active' },
+      ],
+    });
+
+    expect(pressure.status).toBe('watching_pressure');
+    expect(pressure.highPressureResidentCount).toBe(1);
+    expect(stagnant.status).toBe('stagnant');
+    expect(stagnant.stagnantResidentCount).toBe(2);
+  });
+
   test('turns autonomy memories into resident activity items', () => {
     const stream = buildTownActivityStream({
       memories: [
