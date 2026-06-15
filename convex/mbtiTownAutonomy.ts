@@ -520,7 +520,7 @@ export function selectAutonomyInteraction(args: {
   const relationship = scored[0].relationship;
   const residentA = residentByKey.get(relationship.residentAKey)!;
   const residentB = residentByKey.get(relationship.residentBKey)!;
-  const locationKey = sharedLocation(residentA, residentB, args.locations);
+  const locationKey = autonomyInteractionLocation(residentA, residentB, args.locations);
   const memoryHint = strongestSharedMemory(args.memories, relationship);
   const relationshipContext = compactAutonomyContext(memoryHint ?? relationship.summary);
   const conflictLeaning = relationship.tension > relationship.warmth + 10;
@@ -751,7 +751,7 @@ export function compactAutonomyContext(text: string, maxLength = 90) {
   return compacted.length > maxLength ? `${compacted.slice(0, maxLength - 1)}…` : compacted;
 }
 
-function sharedLocation(residentA: ResidentLite, residentB: ResidentLite, locations?: LocationLite[]) {
+export function autonomyInteractionLocation(residentA: ResidentLite, residentB: ResidentLite, locations?: LocationLite[]) {
   if (residentA.defaultLocationKey === residentB.defaultLocationKey) {
     return residentA.defaultLocationKey;
   }
@@ -759,7 +759,16 @@ function sharedLocation(residentA: ResidentLite, residentB: ResidentLite, locati
   const sharedTag = residentA.scheduleTags.find(
     (tag) => residentB.scheduleTags.includes(tag) && knownLocationKeys.has(tag),
   );
-  return sharedTag ?? residentA.defaultLocationKey;
+  if (sharedTag) {
+    return sharedTag;
+  }
+  if (residentA.defaultLocationKey === 'office' && residentB.defaultLocationKey !== 'office') {
+    return residentB.defaultLocationKey;
+  }
+  if (residentB.defaultLocationKey === 'office' && residentA.defaultLocationKey !== 'office') {
+    return residentA.defaultLocationKey;
+  }
+  return residentA.defaultLocationKey;
 }
 
 function clampRelationshipScore(value: number) {

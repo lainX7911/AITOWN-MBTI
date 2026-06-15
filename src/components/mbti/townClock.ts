@@ -47,3 +47,17 @@ export function phaseFromTownProgress(dayProgress: number): TownClockPhase {
   }
   return 'night';
 }
+
+export function townTimelineLocationLabel(locationKey?: string) {
+  const labels: Record<string, string> = {
+    cafe: '晨桥咖啡馆',
+    square: '钟楼广场',
+    clinic: '白榆诊所',
+    school: '旧校舍',
+    workshop: '修理工坊',
+    office: '社区办公室',
+    station: '车站',
+    shop: '商店',
+  };
+  return locationKey ? labels[locationKey] ?? locationKey : '';
+}

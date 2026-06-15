@@ -1,7 +1,7 @@
 import { directEventConclusion } from './eventConclusion';
 import { settleStaleCreatingEntry, StaleHistoryEntry } from './historyState';
 import { activeFacilityViewportFrame } from '../pixiViewportFrame';
-import { liveTownTimelineNode } from './townClock';
+import { liveTownTimelineNode, townTimelineLocationLabel } from './townClock';
 
 describe('MBTI event conclusion', () => {
   test('keeps time-management probes tied to schedule boundaries', () => {
@@ -142,6 +142,11 @@ describe('MBTI town viewport', () => {
       townDay: 200,
       phase: 'afternoon',
     });
+  });
+
+  test('renders town timeline location keys as user-readable labels', () => {
+    expect(townTimelineLocationLabel('office')).toBe('社区办公室');
+    expect(townTimelineLocationLabel('clinic')).toBe('白榆诊所');
   });
 
   test('locked scene viewport scales enough to cover a wide collapsed canvas', () => {

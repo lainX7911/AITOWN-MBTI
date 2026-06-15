@@ -34,7 +34,7 @@ import {
 import { settleStaleCreatingEntry } from './historyState';
 import { objectModeHintForQuestion, objectSummaryForQuestion } from './mbtiDisplay';
 import { startupQuestionMaxSelections, toggleStartupOption } from './startupQuestions';
-import { liveTownTimelineNode, simulatedTownDayMs } from './townClock';
+import { liveTownTimelineNode, simulatedTownDayMs, townTimelineLocationLabel } from './townClock';
 import './MbtiExperiment.css';
 
 const baseExperimentScales = [
@@ -778,7 +778,6 @@ export default function MbtiExperiment() {
       setTimelineAdvanceState('error');
     }
   };
-
   useEffect(() => {
     if (
       runStatus !== 'creating' ||
@@ -2270,7 +2269,7 @@ function ExperimentTownFrame({
             <strong>第 {timelineNode.townDay} 天 · {townTimelinePhaseLabel(timelineNode.phase)}</strong>
             <span>
               {townTimelineScopeLabel(timelineNode.scope)}
-              {timelineNode.locationKey ? ` · ${timelineNode.locationKey}` : ''}
+              {timelineNode.locationKey ? ` · ${townTimelineLocationLabel(timelineNode.locationKey)}` : ''}
             </span>
           </div>
         )}
@@ -3097,7 +3096,7 @@ function TownObservationDashboard({
               <p>{timelineNode.summary}</p>
               <small>
                 {townTimelineScopeLabel(timelineNode.scope)}
-                {timelineNode.locationKey ? ` · 地点 ${timelineNode.locationKey}` : ''}
+                {timelineNode.locationKey ? ` · 地点 ${townTimelineLocationLabel(timelineNode.locationKey)}` : ''}
                 {timelineNode.residentNames.length > 0 ? ` · ${timelineNode.residentNames.join('、')}` : ''}
               </small>
             </>
@@ -3771,7 +3770,9 @@ function timelineEventWaitState(
   const currentProgress = current.townDay - 1 + (current.dayProgress ?? phaseProgress(current.phase));
   const remainingDays = targetProgress - currentProgress;
   const remainingMs = remainingDays * simulatedTownDayMs;
+  const advanceDays = Math.max(0, Math.ceil(remainingDays));
   return {
+    advanceDays,
     due: remainingMs <= 0,
     currentLabel: `第 ${current.townDay} 天 · ${townTimelinePhaseLabel(current.phase)}`,
     remainingLabel: formatTownWaitDuration(Math.max(0, remainingMs)),
@@ -3793,7 +3794,7 @@ function timelineRunStatusText(args: {
   if (args.timelineAdvanceState === 'running') {
     return {
       title: '正在推进小镇时间线',
-      detail: '系统正在执行一次居民自治或时间线快进，完成后会继续检查用户事件是否到点。',
+      detail: '系统正在执行一次居民自治或一天推进，完成后会继续检查用户事件是否到点。',
     };
   }
   if (args.timelineAdvanceState === 'error') {
@@ -3817,8 +3818,8 @@ function timelineRunStatusText(args: {
   if (args.nextEvent && args.wait) {
     const eventLabel = args.nextEvent.title ? `“${compactText(args.nextEvent.title, 24)}”` : '下一事件';
     return {
-      title: `未停：正在等待 ${eventLabel}`,
-      detail: `${args.wait.currentLabel}，还需 ${args.wait.remainingLabel}；期间居民生活/事业线继续推进，事件到点会自动触发。`,
+      title: `未停：等待小镇自然到达 ${eventLabel}`,
+      detail: `${args.wait.currentLabel}，目标还差 ${args.wait.remainingLabel}；用户事件不会驱动居民快进，居民生活线按自己的自治节奏继续推进。`,
     };
   }
   return {

@@ -3,6 +3,7 @@ import {
   fastForwardCalendarFromLatest,
   simulatedTownNowFromLatest,
   townCalendarFromElapsed,
+  autonomyInteractionLocation,
   selectAutonomyInteraction,
   selectRunnableConversationRequest,
 } from './mbtiTownAutonomy';
@@ -106,6 +107,30 @@ describe('MBTI town autonomy selection', () => {
       residentKeys: ['lin', 'wen'],
     });
     expect(selection?.timelineEntry.summary).toContain('第 2 天');
+  });
+
+  test('relationship timeline location avoids sticking to office when the other resident has a concrete place', () => {
+    const locationKey = autonomyInteractionLocation(
+      {
+        _id: 'resident-office' as any,
+        key: 'office-resident',
+        name: '温理',
+        role: '会计',
+        defaultLocationKey: 'office',
+        scheduleTags: ['office'],
+      },
+      {
+        _id: 'resident-cafe' as any,
+        key: 'cafe-resident',
+        name: '林遥',
+        role: '咖啡馆店主',
+        defaultLocationKey: 'cafe',
+        scheduleTags: ['cafe'],
+      },
+      [{ key: 'office' } as any, { key: 'cafe' } as any],
+    );
+
+    expect(locationKey).toBe('cafe');
   });
 
   test('compacts repeated autonomy traces before reusing them as resident context', () => {
