@@ -961,6 +961,28 @@ async function townCounts(ctx: QueryCtx | MutationCtx, townId: Id<'mbtiTownProfi
           topicSeed: resident.autonomyPlan?.topicSeed,
           updatedAt: resident.autonomyPlan?.updatedAt ?? 0,
         })),
+      residentDevelopment: residents
+        .filter((resident) => resident.status === 'active')
+        .sort((a, b) => residentDevelopmentSortScore(b) - residentDevelopmentSortScore(a))
+        .slice(0, 6)
+        .map((resident) => {
+          const profile = residentLifeProfileOrFallback(resident);
+          return {
+            residentKey: resident.key,
+            residentName: resident.name,
+            role: resident.role,
+            longTermGoal: profile.longTermGoal,
+            currentPressure: profile.currentPressure,
+            economy: profile.economy,
+            career: profile.career,
+            social: profile.social,
+            health: profile.health,
+            stress: profile.stress,
+            lastImpactReason: profile.lastImpactReason,
+            updatedAt: profile.updatedAt ?? resident.autonomyPlan?.updatedAt ?? 0,
+            currentIntent: resident.autonomyPlan?.intent,
+          };
+        }),
       pressureRelationships: relationships
         .sort(
           (a, b) =>
@@ -1018,6 +1040,48 @@ async function townCounts(ctx: QueryCtx | MutationCtx, townId: Id<'mbtiTownProfi
           startedAt: request.startedAt,
         })),
     },
+  };
+}
+
+function residentDevelopmentSortScore(resident: {
+  autonomyPlan?: { updatedAt: number };
+  lifeProfile?: {
+    stress: number;
+    economy: number;
+    career: number;
+    social: number;
+    health: number;
+    updatedAt?: number;
+  };
+}) {
+  const profile = resident.lifeProfile;
+  const pressure = profile ? profile.stress + Math.max(0, 55 - profile.economy) + Math.max(0, 55 - profile.social) : 0;
+  return (resident.autonomyPlan?.updatedAt ?? 0) / 100000000000 + pressure;
+}
+
+function residentLifeProfileOrFallback(resident: {
+  role: string;
+  background: string;
+  lifeProfile?: {
+    longTermGoal: string;
+    currentPressure: string;
+    economy: number;
+    career: number;
+    social: number;
+    health: number;
+    stress: number;
+    updatedAt?: number;
+    lastImpactReason?: string;
+  };
+}) {
+  return resident.lifeProfile ?? {
+    longTermGoal: `围绕${resident.role}这条生活线维持稳定，并逐步形成自己的长期位置`,
+    currentPressure: compactTownContextLine(resident.background, 54) || '当前压力尚未被系统记录，需要继续观察',
+    economy: 50,
+    career: 50,
+    social: 50,
+    health: 55,
+    stress: 50,
   };
 }
 

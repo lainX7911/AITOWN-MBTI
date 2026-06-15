@@ -26,6 +26,17 @@ export type TownResidentSeed = {
   background: string;
   defaultLocationKey: string;
   scheduleTags: string[];
+  lifeProfile?: TownResidentLifeProfileSeed;
+};
+
+export type TownResidentLifeProfileSeed = {
+  longTermGoal: string;
+  currentPressure: string;
+  economy: number;
+  career: number;
+  social: number;
+  health: number;
+  stress: number;
 };
 
 export type TownRelationshipSeed = {
@@ -523,7 +534,74 @@ function resident(
     background,
     defaultLocationKey,
     scheduleTags: scheduleForLocation(defaultLocationKey),
+    lifeProfile: buildResidentLifeProfile(role, mbtiCode, defaultLocationKey, traits, background),
   };
+}
+
+function buildResidentLifeProfile(
+  role: string,
+  mbtiCode: string,
+  defaultLocationKey: string,
+  traits: string[],
+  background: string,
+): TownResidentLifeProfileSeed {
+  const roleText = `${role} ${traits.join(' ')} ${background}`;
+  const longTermGoal = residentLongTermGoal(role, defaultLocationKey, roleText);
+  const currentPressure = residentCurrentPressure(role, mbtiCode, roleText);
+  const economy = clampSeedScore(
+    hasAny(roleText, ['老板', '店主', '站长', '经理', '主管', '会计']) ? 62 : 48,
+  );
+  const career = clampSeedScore(
+    hasAny(roleText, ['实习', '自由', '大学生', '研究生']) ? 44 : hasAny(roleText, ['医生', '老师', '组织者', '主管']) ? 68 : 56,
+  );
+  const social = clampSeedScore(mbtiCode.includes('E') ? 68 : 46);
+  const health = clampSeedScore(hasAny(roleText, ['夜班', '疲惫', '压力']) ? 46 : 58);
+  const stress = clampSeedScore(
+    hasAny(roleText, ['敏感', '承担', '强势', '冲突', '守时', '责任']) ? 64 : 48,
+  );
+  return { longTermGoal, currentPressure, economy, career, social, health, stress };
+}
+
+function residentLongTermGoal(role: string, locationKey: string, roleText: string) {
+  if (hasAny(roleText, ['店主', '老板', '站长'])) {
+    return `把${role}这条事业线经营稳定，同时不被日常人情消耗掉`;
+  }
+  if (hasAny(roleText, ['护士', '医生', '咨询', '社工'])) {
+    return `在照顾他人的工作里维持专业边界和自己的生活秩序`;
+  }
+  if (hasAny(roleText, ['老师', '图书', '研究生', '大学生'])) {
+    return `把知识、成长和稳定关系放进可持续的日常节奏`;
+  }
+  if (hasAny(roleText, ['会计', '组织者', '经理', '主管', '物流'])) {
+    return `守住秩序和责任边界，避免公共事务反复失控`;
+  }
+  if (hasAny(roleText, ['插画', '摄影', '作家', '鼓手', '花店'])) {
+    return `保留创作和表达空间，同时建立更稳定的现实支撑`;
+  }
+  return `在${locationName(locationKey)}附近维持稳定生活，并把个人节奏过得更清楚`;
+}
+
+function residentCurrentPressure(role: string, mbtiCode: string, roleText: string) {
+  if (hasAny(roleText, ['夜班', '照顾', '医生', '护士'])) {
+    return `照护和责任不断占用精力，担心自己没有恢复时间`;
+  }
+  if (hasAny(roleText, ['自由', '插画', '摄影', '作家', '鼓手'])) {
+    return `收入和创作节奏不稳定，需要在自由和安全感之间取舍`;
+  }
+  if (hasAny(roleText, ['会计', '守时', '秩序', '责任'])) {
+    return `别人临时变动太多，容易把他的安全感和信任感拉低`;
+  }
+  if (hasAny(roleText, ['强势', '主管', '组织者', '经理'])) {
+    return `习惯推动事情往前，但容易让周围人感到被压迫`;
+  }
+  if (mbtiCode.includes('I')) {
+    return `社交消耗偏高，需要确认哪些关系值得继续投入`;
+  }
+  return `人情往来很多，需要分清热心、责任和自己的边界`;
+}
+
+function clampSeedScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function memory(

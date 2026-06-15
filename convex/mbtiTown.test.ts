@@ -1,6 +1,18 @@
 import { buildSceneResidentRoles, hydrateEventPlanResidentPlaceholders } from './mbtiTown';
+import { defaultTownResidents } from '../data/mbtiPersistentTown';
 
 describe('MBTI town scene resident roles', () => {
+  test('default residents have durable life goals and pressures', () => {
+    expect(defaultTownResidents.length).toBeGreaterThan(0);
+    for (const resident of defaultTownResidents) {
+      expect(resident.lifeProfile).toBeTruthy();
+      expect(resident.lifeProfile?.longTermGoal).toBeTruthy();
+      expect(resident.lifeProfile?.currentPressure).toBeTruthy();
+      expect(resident.lifeProfile?.economy).toBeGreaterThanOrEqual(0);
+      expect(resident.lifeProfile?.stress).toBeLessThanOrEqual(100);
+    }
+  });
+
   test('adds per-scene role overlays without changing persistent resident identity', () => {
     const resident = {
       key: 'lin_yao',

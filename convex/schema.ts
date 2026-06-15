@@ -479,6 +479,19 @@ export default defineSchema({
     defaultLocationKey: v.string(),
     scheduleTags: v.array(v.string()),
     status: v.union(v.literal('active'), v.literal('inactive')),
+    lifeProfile: v.optional(
+      v.object({
+        longTermGoal: v.string(),
+        currentPressure: v.string(),
+        economy: v.number(),
+        career: v.number(),
+        social: v.number(),
+        health: v.number(),
+        stress: v.number(),
+        updatedAt: v.optional(v.number()),
+        lastImpactReason: v.optional(v.string()),
+      }),
+    ),
     playerId: v.optional(playerId),
     agentId: v.optional(v.string()),
     autonomyPlan: v.optional(

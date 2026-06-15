@@ -9,7 +9,20 @@ import {
 
 const DEFAULT_TOWN_SLUG = 'evergreen-mbti-town';
 
-type ResidentLite = Pick<Doc<'mbtiTownResidents'>, '_id' | 'key' | 'name' | 'role' | 'defaultLocationKey' | 'scheduleTags'>;
+type ResidentLifeProfileLite = {
+  longTermGoal: string;
+  currentPressure: string;
+  economy: number;
+  career: number;
+  social: number;
+  health: number;
+  stress: number;
+  updatedAt?: number;
+  lastImpactReason?: string;
+};
+type ResidentLite = Pick<Doc<'mbtiTownResidents'>, '_id' | 'key' | 'name' | 'role' | 'defaultLocationKey' | 'scheduleTags'> & {
+  lifeProfile?: ResidentLifeProfileLite;
+};
 type RelationshipLite = Pick<
   Doc<'mbtiRelationships'>,
   '_id' | 'residentAKey' | 'residentBKey' | 'familiarity' | 'trust' | 'warmth' | 'tension' | 'influence' | 'summary' | 'lastInteractionAt'
@@ -55,6 +68,15 @@ export type AutonomySelection = {
     seekResidentKeys: string[];
     avoidResidentKeys: string[];
     topicSeed: string;
+    reason: string;
+  }>;
+  residentLifeImpacts: Array<{
+    residentKey: string;
+    economyDelta: number;
+    careerDelta: number;
+    socialDelta: number;
+    healthDelta: number;
+    stressDelta: number;
     reason: string;
   }>;
   timelineEntry: {
@@ -478,6 +500,7 @@ async function applyAutonomyTick(
     if (!resident) {
       continue;
     }
+    const lifeImpact = selection.residentLifeImpacts.find((impact) => impact.residentKey === plan.residentKey);
     await ctx.db.patch(resident._id, {
       autonomyPlan: {
         updatedAt: now,
@@ -489,6 +512,11 @@ async function applyAutonomyTick(
         topicSeed: plan.topicSeed,
         reason: plan.reason,
       },
+      ...(lifeImpact
+        ? {
+            lifeProfile: applyResidentLifeImpact(resident.lifeProfile, lifeImpact, now),
+          }
+        : {}),
     });
   }
   await ctx.db.patch(town._id, { updatedAt: now });
@@ -583,6 +611,13 @@ export function selectAutonomyInteraction(args: {
       locationKey,
       topicSeed: relationshipContext,
       conflictLeaning,
+    }),
+    residentLifeImpacts: buildResidentLifeImpacts({
+      residentA,
+      residentB,
+      conflictLeaning,
+      warmLeaning,
+      timelineScope,
     }),
     timelineEntry: {
       ...calendar,
@@ -709,6 +744,79 @@ function buildResidentPlans(args: {
       ...shared,
     },
   ];
+}
+
+function buildResidentLifeImpacts(args: {
+  residentA: ResidentLite;
+  residentB: ResidentLite;
+  conflictLeaning: boolean;
+  warmLeaning: boolean;
+  timelineScope: 'resident_life' | 'resident_work' | 'relationship';
+}): AutonomySelection['residentLifeImpacts'] {
+  const base = args.conflictLeaning
+    ? {
+        economyDelta: 0,
+        careerDelta: 0,
+        socialDelta: -1,
+        healthDelta: 0,
+        stressDelta: 4,
+        reason: '关系旧分歧浮现，社交稳定感下降，压力上升',
+      }
+    : args.timelineScope === 'resident_work'
+    ? {
+        economyDelta: 1,
+        careerDelta: 2,
+        socialDelta: args.warmLeaning ? 1 : 0,
+        healthDelta: 0,
+        stressDelta: -1,
+        reason: '工作线自然推进，事业和经济稳定度小幅增加',
+      }
+    : {
+        economyDelta: 0,
+        careerDelta: 0,
+        socialDelta: 2,
+        healthDelta: 1,
+        stressDelta: -2,
+        reason: '日常往来延续，社交支持和恢复感小幅增加',
+      };
+  return [args.residentA, args.residentB].map((resident) => ({
+    residentKey: resident.key,
+    ...base,
+  }));
+}
+
+function applyResidentLifeImpact(
+  profile: ResidentLifeProfileLite | undefined,
+  impact: AutonomySelection['residentLifeImpacts'][number],
+  now: number,
+): ResidentLifeProfileLite {
+  const base = profile ?? fallbackResidentLifeProfile();
+  return {
+    ...base,
+    economy: clampLifeScore(base.economy + impact.economyDelta),
+    career: clampLifeScore(base.career + impact.careerDelta),
+    social: clampLifeScore(base.social + impact.socialDelta),
+    health: clampLifeScore(base.health + impact.healthDelta),
+    stress: clampLifeScore(base.stress + impact.stressDelta),
+    updatedAt: now,
+    lastImpactReason: impact.reason,
+  };
+}
+
+function fallbackResidentLifeProfile(): ResidentLifeProfileLite {
+  return {
+    longTermGoal: '维持稳定生活，并在小镇关系里找到自己的长期位置',
+    currentPressure: '近期状态尚未被系统明确记录，需要通过自治生活线继续观察',
+    economy: 50,
+    career: 50,
+    social: 50,
+    health: 55,
+    stress: 50,
+  };
+}
+
+function clampLifeScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function relationshipScore(

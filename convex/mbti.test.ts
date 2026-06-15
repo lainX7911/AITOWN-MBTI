@@ -125,6 +125,24 @@ describe('MBTI observation duration', () => {
     ] as any)).toBe(false);
   });
 
+  test('keeps the normal timeline capped but allows one explicit idle follow-up probe', () => {
+    const closedTargetBatch = Array.from({ length: 12 }, () => ({
+      status: 'observed',
+      probeOrigin: 'initial',
+    }));
+
+    expect(shouldCreateTimelineGeneratedProbe(closedTargetBatch as any, 12)).toBe(false);
+    expect(shouldCreateTimelineGeneratedProbe(closedTargetBatch as any, 12, {
+      allowOneBeyondTargetWhenIdle: true,
+    })).toBe(true);
+    expect(shouldCreateTimelineGeneratedProbe([
+      ...closedTargetBatch,
+      { status: 'observed', probeOrigin: 'adaptive' },
+    ] as any, 12, {
+      allowOneBeyondTargetWhenIdle: true,
+    })).toBe(false);
+  });
+
   test('builds the next timeline-generated probe in a future town slot', () => {
     const draft = buildTimelineGeneratedProbeDraft({
       question: '我应该换工作吗？',

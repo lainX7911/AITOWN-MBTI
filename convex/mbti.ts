@@ -38,6 +38,7 @@ const INITIAL_TIMELINE_EVENT_COUNT = 2;
 const ensureResidentInteractionRef = makeFunctionReference<'action'>('mbti:ensureResidentInteraction') as any;
 const experimentReadyForFinalReportRef = makeFunctionReference<'query'>('mbti:experimentReadyForFinalReport') as any;
 const finalizeExperimentRef = makeFunctionReference<'action'>('mbti:finalizeExperiment') as any;
+const collectIdleProgressResolutionContextRef = makeFunctionReference<'query'>('mbti:collectIdleProgressResolutionContext') as any;
 const replaceExperimentReportRef = makeFunctionReference<'mutation'>('mbti:replaceExperimentReport') as any;
 const collectEventAssessmentPayloadRef = makeFunctionReference<'query'>('mbti:collectEventAssessmentPayload') as any;
 const upsertEventAssessmentRef = makeFunctionReference<'mutation'>('mbti:upsertEventAssessment') as any;
@@ -807,6 +808,7 @@ const OPEN_TIMELINE_PROBE_STATUSES = new Set([
 export function shouldCreateTimelineGeneratedProbe(
   events: Array<{ status: string; probeOrigin?: string }>,
   maxProbeCount = 8,
+  options?: { allowOneBeyondTargetWhenIdle?: boolean },
 ) {
   const openProbe = events.some((event) => OPEN_TIMELINE_PROBE_STATUSES.has(event.status));
   if (openProbe) {
@@ -817,7 +819,8 @@ export function shouldCreateTimelineGeneratedProbe(
     event.probeOrigin === 'adaptive' ||
     event.probeOrigin === 'calibration'
   ).length;
-  return probeCount < maxProbeCount;
+  return probeCount < maxProbeCount ||
+    Boolean(options?.allowOneBeyondTargetWhenIdle && probeCount === maxProbeCount);
 }
 
 export function buildTimelineGeneratedProbeDraft(args: {
@@ -1530,6 +1533,7 @@ export const collectTimelineProbeGenerationPayload = internalQuery({
       v.literal('evening'),
       v.literal('night'),
     ),
+    allowBeyondTarget: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const experiment = await ctx.db.get(args.experimentId);
@@ -1545,7 +1549,9 @@ export const collectTimelineProbeGenerationPayload = internalQuery({
       .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
       .collect();
     const targetEventCount = experiment.observation.targetEventCount ?? 8;
-    if (!shouldCreateTimelineGeneratedProbe(events, targetEventCount)) {
+    if (!shouldCreateTimelineGeneratedProbe(events, targetEventCount, {
+      allowOneBeyondTargetWhenIdle: args.allowBeyondTarget,
+    })) {
       return { shouldCreate: false };
     }
     const residents = experiment.townId
@@ -1589,6 +1595,7 @@ export const insertTimelineGeneratedProbe = internalMutation({
   args: {
     experimentId: v.id('mbtiExperiments'),
     draft: v.any(),
+    allowBeyondTarget: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const experiment = await ctx.db.get(args.experimentId);
@@ -1599,7 +1606,9 @@ export const insertTimelineGeneratedProbe = internalMutation({
       .query('mbtiEvents')
       .withIndex('experimentId', (q) => q.eq('experimentId', experiment._id))
       .collect();
-    if (!shouldCreateTimelineGeneratedProbe(events, experiment.observation.targetEventCount ?? 8)) {
+    if (!shouldCreateTimelineGeneratedProbe(events, experiment.observation.targetEventCount ?? 8, {
+      allowOneBeyondTargetWhenIdle: args.allowBeyondTarget,
+    })) {
       return null;
     }
     const draft = args.draft;
@@ -1667,6 +1676,30 @@ export const ensureNextTimelineProbeAfterEventClosed = internalMutation({
       phase: latestTimeline?.phase ?? 'morning',
     });
     return { scheduled: shouldCreateTimelineGeneratedProbe(events, experiment.observation.targetEventCount ?? 8) };
+  },
+});
+
+export const collectIdleProgressResolutionContext = internalQuery({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+  },
+  handler: async (ctx, args) => {
+    const experiment = await ctx.db.get(args.experimentId);
+    if (!experiment || experiment.status !== 'running') {
+      return { canResolve: false, reason: 'experiment-not-running' };
+    }
+    const latestTimeline = experiment.townId
+      ? await ctx.db
+          .query('mbtiTownTimelineEvents')
+          .withIndex('town_time', (q) => q.eq('townId', experiment.townId!))
+          .order('desc')
+          .first()
+      : null;
+    return {
+      canResolve: true,
+      townDay: latestTimeline?.townDay ?? 1,
+      phase: latestTimeline?.phase ?? 'morning',
+    };
   },
 });
 
@@ -3353,6 +3386,52 @@ export const finalizeExperimentIfReady = action({
       experimentId: args.experimentId,
     });
     return { ...readiness, finalizeRequested: true };
+  },
+});
+
+export const resolveIdleExperimentProgress = action({
+  args: {
+    experimentId: v.id('mbtiExperiments'),
+  },
+  handler: async (ctx, args) => {
+    const readiness = await ctx.runQuery(experimentReadyForFinalReportRef, {
+      experimentId: args.experimentId,
+    }) as {
+      ready: boolean;
+      reason: string;
+      eventCount: number;
+      recordedEventCount: number;
+    };
+    if (readiness.ready) {
+      await ctx.runAction(finalizeExperimentRef, {
+        experimentId: args.experimentId,
+      });
+      return { status: 'finalize_requested', readiness };
+    }
+
+    const context = await ctx.runQuery(collectIdleProgressResolutionContextRef, {
+      experimentId: args.experimentId,
+    }) as {
+      canResolve: boolean;
+      reason?: string;
+      townDay?: number;
+      phase?: TownTimelinePhase;
+    };
+    if (!context.canResolve) {
+      return { status: 'not_running', reason: context.reason, readiness };
+    }
+
+    const probe = await ctx.runAction(ensureNextTimelineProbeNodeRef, {
+      experimentId: args.experimentId,
+      townDay: context.townDay ?? 1,
+      phase: context.phase ?? 'morning',
+      allowBeyondTarget: true,
+    }) as { created: boolean; reason?: string; eventId?: unknown };
+    return {
+      status: probe.created ? 'probe_requested' : 'no_probe_created',
+      readiness,
+      probe,
+    };
   },
 });
 

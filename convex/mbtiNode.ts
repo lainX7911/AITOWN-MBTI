@@ -161,6 +161,7 @@ export const ensureNextTimelineProbeNode = action({
       v.literal('evening'),
       v.literal('night'),
     ),
+    allowBeyondTarget: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const payload = await ctx.runQuery(collectTimelineProbeGenerationPayloadRef, args) as any;
@@ -209,6 +210,7 @@ export const ensureNextTimelineProbeNode = action({
     const eventId = await ctx.runMutation(insertTimelineGeneratedProbeRef, {
       experimentId: args.experimentId,
       draft,
+      allowBeyondTarget: args.allowBeyondTarget,
     });
     return { created: Boolean(eventId), eventId };
   },

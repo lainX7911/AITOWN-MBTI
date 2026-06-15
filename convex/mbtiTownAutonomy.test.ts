@@ -107,6 +107,18 @@ describe('MBTI town autonomy selection', () => {
       residentKeys: ['lin', 'wen'],
     });
     expect(selection?.timelineEntry.summary).toContain('第 2 天');
+    expect(selection?.residentLifeImpacts).toEqual([
+      expect.objectContaining({
+        residentKey: 'lin',
+        socialDelta: 2,
+        stressDelta: -2,
+      }),
+      expect.objectContaining({
+        residentKey: 'wen',
+        socialDelta: 2,
+        stressDelta: -2,
+      }),
+    ]);
   });
 
   test('relationship timeline location avoids sticking to office when the other resident has a concrete place', () => {
@@ -218,6 +230,16 @@ describe('MBTI town autonomy selection', () => {
 
     expect(selection?.relationshipId).toBe('rel-tense');
     expect(selection?.kind).toBe('conflict');
+    expect(selection?.residentLifeImpacts).toEqual([
+      expect.objectContaining({
+        socialDelta: -1,
+        stressDelta: 4,
+      }),
+      expect.objectContaining({
+        socialDelta: -1,
+        stressDelta: 4,
+      }),
+    ]);
     expect(selection?.residentAKey).toBe('lin');
     expect(selection?.residentBKey).toBe('xia');
     expect(selection?.summary).toContain('旧记忆');

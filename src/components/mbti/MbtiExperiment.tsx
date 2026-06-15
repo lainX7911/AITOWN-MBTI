@@ -646,13 +646,16 @@ export default function MbtiExperiment() {
   const [deletingHistoryId, setDeletingHistoryId] = useState<string | null>(null);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [timelineAdvanceState, setTimelineAdvanceState] = useState<'idle' | 'running' | 'error'>('idle');
+  const [idleResolutionState, setIdleResolutionState] = useState<'idle' | 'running' | 'error'>('idle');
   const finalizeAttemptRef = useRef<string | null>(null);
+  const idleResolveAttemptRef = useRef<string | null>(null);
   const createExperiment = useMutation(api.mbti.createExperiment);
   const deleteExperiment = useMutation(api.mbti.deleteExperiment);
   const clearAllExperiments = useMutation(api.mbti.clearAllExperiments);
   const submitUserResponse = useMutation(api.mbti.submitUserResponse);
   const startExperimentEvolution = useMutation(api.mbti.startExperimentEvolution);
   const finalizeExperimentIfReady = useAction(api.mbti.finalizeExperimentIfReady);
+  const resolveIdleExperimentProgress = useAction(api.mbti.resolveIdleExperimentProgress);
   const assessMbtiEvent = useAction(api.mbti.assessMbtiEvent);
   const seedDefaultTown = useMutation(api.mbtiTown.seedDefaultTown);
   const runAutonomyTick = useMutation(api.mbtiTownAutonomy.runAutonomyTick);
@@ -881,6 +884,43 @@ export default function MbtiExperiment() {
     experimentState?.socialEvents,
     experimentState?.userResponses,
     finalizeExperimentIfReady,
+  ]);
+
+  useEffect(() => {
+    const experiment = experimentState?.experiment;
+    if (!experiment || experiment.status !== 'running' || experiment.report || experimentState.events.length === 0) {
+      return;
+    }
+    const runtimeSummary = summarizeEventRuntime(experimentState.events);
+    const targetEventCount = experiment.observation.targetEventCount ?? 8;
+    if (
+      runtimeSummary.nextTimelineEvent ||
+      runtimeSummary.statusCounts.waitingTimeline > 0 ||
+      experimentState.events.length < targetEventCount
+    ) {
+      return;
+    }
+    const attemptKey = `${experiment._id}:${experimentState.events.length}:${runtimeSummary.statusCounts.occurred}`;
+    if (idleResolveAttemptRef.current === attemptKey) {
+      return;
+    }
+    idleResolveAttemptRef.current = attemptKey;
+    setIdleResolutionState('running');
+    void resolveIdleExperimentProgress({
+      experimentId: experiment._id,
+    })
+      .then(() => {
+        setIdleResolutionState('idle');
+      })
+      .catch((error) => {
+        console.warn('MBTI idle progress resolution failed', error);
+        idleResolveAttemptRef.current = null;
+        setIdleResolutionState('error');
+      });
+  }, [
+    experimentState?.experiment,
+    experimentState?.events,
+    resolveIdleExperimentProgress,
   ]);
 
   useEffect(() => {
@@ -1570,8 +1610,10 @@ export default function MbtiExperiment() {
               playerDescriptions={experimentState?.playerDescriptions ?? []}
               questionFocus={effectiveQuestionFocus}
               decisionState={experimentState?.experiment.decisionState}
+              idleResolutionState={idleResolutionState}
               runStatus={runStatus}
               socialEvents={experimentState?.socialEvents ?? []}
+              targetEventCount={experimentState?.experiment.observation.targetEventCount}
               userResponses={experimentState?.userResponses ?? []}
               showInlineResponses={runStatus !== 'awaiting_user_responses'}
               manualCalibrationMode={false}
@@ -2301,6 +2343,7 @@ function QuestionGuidanceRail({
   eventEvidence: persistedEventEvidence,
   events,
   experimentId,
+  idleResolutionState = 'idle',
   innerThoughts,
   messages,
   onAssessEvent,
@@ -2312,6 +2355,7 @@ function QuestionGuidanceRail({
   showInlineResponses,
   manualCalibrationMode = false,
   socialEvents,
+  targetEventCount,
   userResponses,
 }: {
   behaviorEvents: Array<{
@@ -2359,6 +2403,7 @@ function QuestionGuidanceRail({
     adaptiveReason?: string;
   }>;
   experimentId?: Id<'mbtiExperiments'>;
+  idleResolutionState?: 'idle' | 'running' | 'error';
   innerThoughts: Array<{
     _creationTime?: number;
     playerId: string;
@@ -2403,6 +2448,7 @@ function QuestionGuidanceRail({
     mbtiEventId?: string;
     participantIds?: string[];
   }>;
+  targetEventCount?: number;
   userResponses: UserResponse[];
 }) {
   if (!questionFocus) {
@@ -2569,6 +2615,7 @@ function QuestionGuidanceRail({
   const runtimeSummary = summarizeEventRuntime(events);
   const nextRuntimeEvent = runtimeSummary.nextTimelineEvent;
   const nextEventWait = timelineEventWaitState(currentTimelineNode, nextRuntimeEvent);
+  const reachedTargetBatch = typeof targetEventCount === 'number' && events.length >= targetEventCount;
   const nudgeAttemptRef = useRef<string | null>(null);
   useEffect(() => {
     if (!nextEventWait?.due || !nextRuntimeEvent?._id || !onNudgeTimeline || runStatus !== 'running') {
@@ -2707,8 +2754,22 @@ function QuestionGuidanceRail({
             </>
           ) : (
             <>
-              <strong>暂无等待项</strong>
-              <p>小镇会在生活线继续推进后再判断是否需要生成下一件事。</p>
+              <strong>
+                {idleResolutionState === 'running'
+                  ? '正在判断总结或补证据'
+                  : reachedTargetBatch
+                  ? '当前批次已结束'
+                  : '暂无等待项'}
+              </strong>
+              <p>
+                {idleResolutionState === 'running'
+                  ? '系统正在检查当前证据是否足够形成结论；不足时会立即生成一个补证据事件。'
+                  : idleResolutionState === 'error'
+                  ? '收敛检查失败，请稍后重试或查看后端日志。'
+                  : reachedTargetBatch
+                  ? '系统会在当前证据足够时结束；不足时明确生成下一件补证据事件。'
+                  : '当前没有排期事件；系统会在生成下一项前给出明确状态。'}
+              </p>
             </>
           )}
         </article>
@@ -3002,6 +3063,21 @@ type TownObservationSummary = {
     topicSeed?: string;
     updatedAt: number;
   }>;
+  residentDevelopment: Array<{
+    residentKey: string;
+    residentName: string;
+    role: string;
+    longTermGoal: string;
+    currentPressure: string;
+    economy: number;
+    career: number;
+    social: number;
+    health: number;
+    stress: number;
+    lastImpactReason?: string;
+    updatedAt: number;
+    currentIntent?: string;
+  }>;
   pressureRelationships: Array<{
     relationshipId: string;
     residentNames: string[];
@@ -3066,6 +3142,7 @@ function TownObservationDashboard({
 }) {
   const activePlan = observation.activeResidentPlans[0];
   const timelineNode = observation.timeline?.[0];
+  const residentDevelopment = observation.residentDevelopment?.[0];
   const pressureRelationship = observation.pressureRelationships[0];
   const recentMemory = observation.recentMemories[0];
   const recentActivity = observation.activityStream[0];
@@ -3124,6 +3201,33 @@ function TownObservationDashboard({
             <>
               <strong>等待自治 tick</strong>
               <p>还没有短期居民计划；运行一次自治 tick 后会出现居民主动意图。</p>
+            </>
+          )}
+        </article>
+        <article>
+          <span>居民发展</span>
+          {residentDevelopment ? (
+            <>
+              <strong>{residentDevelopment.residentName} · {residentDevelopment.role}</strong>
+              <p>{residentDevelopment.longTermGoal}</p>
+              <small>
+                压力：{residentDevelopment.currentPressure}
+              </small>
+              <div className="mbti-resident-development-bars">
+                <ResidentStateMeter label="经济" value={residentDevelopment.economy} />
+                <ResidentStateMeter label="事业" value={residentDevelopment.career} />
+                <ResidentStateMeter label="社交" value={residentDevelopment.social} />
+                <ResidentStateMeter label="健康" value={residentDevelopment.health} />
+                <ResidentStateMeter label="压力" value={residentDevelopment.stress} tone="stress" />
+              </div>
+              {residentDevelopment.lastImpactReason && (
+                <small>最近变化：{residentDevelopment.lastImpactReason}</small>
+              )}
+            </>
+          ) : (
+            <>
+              <strong>等待居民画像</strong>
+              <p>居民目标和状态会随自治生活线更新，用来观察他们自己的发展。</p>
             </>
           )}
         </article>
@@ -3203,6 +3307,27 @@ function TownObservationDashboard({
         </article>
       </div>
     </section>
+  );
+}
+
+function ResidentStateMeter({
+  label,
+  tone = 'default',
+  value,
+}: {
+  label: string;
+  tone?: 'default' | 'stress';
+  value: number;
+}) {
+  const safeValue = Math.max(0, Math.min(100, Math.round(value)));
+  return (
+    <span className={`mbti-resident-state-meter ${tone === 'stress' ? 'is-stress' : ''}`}>
+      <span>{label}</span>
+      <i aria-hidden="true">
+        <b style={{ width: `${safeValue}%` }} />
+      </i>
+      <em>{safeValue}</em>
+    </span>
   );
 }
 

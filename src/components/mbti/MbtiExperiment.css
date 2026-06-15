@@ -1998,6 +1998,50 @@
   line-height: 1.45;
 }
 
+.mbti-resident-development-bars {
+  display: grid;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.mbti-resident-state-meter {
+  display: grid;
+  grid-template-columns: 34px minmax(72px, 1fr) 28px;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.mbti-resident-state-meter > span {
+  color: #334155;
+}
+
+.mbti-resident-state-meter i {
+  overflow: hidden;
+  height: 6px;
+  border: 1px solid #d8e3ef;
+  background: #eef4f8;
+}
+
+.mbti-resident-state-meter b {
+  display: block;
+  height: 100%;
+  background: #0f766e;
+}
+
+.mbti-resident-state-meter.is-stress b {
+  background: #b45309;
+}
+
+.mbti-resident-state-meter em {
+  color: #172033;
+  font-style: normal;
+  text-align: right;
+}
+
 .mbti-guidance-rail {
   display: grid;
   gap: 10px;
