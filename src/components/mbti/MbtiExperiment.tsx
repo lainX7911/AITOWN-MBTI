@@ -124,6 +124,15 @@ type DecisionStructure = {
   nextValidationQuestions: string[];
 };
 
+type ReasonablenessDiscussion = {
+  plausibleInterpretation: string;
+  whyReasonable: string[];
+  possibleMisreads: string[];
+  assumptionsToConfirm: string[];
+  alternativeFrames: string[];
+  discussionPrompt: string;
+};
+
 type UserResponse = {
   _id: string;
   experimentId: string;
@@ -177,6 +186,7 @@ type QuestionFocus = {
   drivingTension: string;
   observationGoal: string;
   decisionStructure?: DecisionStructure;
+  reasonablenessDiscussion?: ReasonablenessDiscussion;
   analysisDimensions?: string[];
   designRationale?: string;
   theoreticalBasis?: string[];
@@ -1627,6 +1637,21 @@ export default function MbtiExperiment() {
                           : effectiveQuestionFocus.evidenceTargets).join('、')}
                       </p>
                     </article>
+                    {effectiveQuestionFocus.reasonablenessDiscussion && (
+                      <article>
+                        <span>拆解合理性</span>
+                        <strong>{effectiveQuestionFocus.reasonablenessDiscussion.plausibleInterpretation}</strong>
+                        <p>
+                          合理之处：{effectiveQuestionFocus.reasonablenessDiscussion.whyReasonable.join('、')}
+                        </p>
+                        <p>
+                          待讨论：{[
+                            ...effectiveQuestionFocus.reasonablenessDiscussion.possibleMisreads,
+                            ...effectiveQuestionFocus.reasonablenessDiscussion.assumptionsToConfirm,
+                          ].join('、')}
+                        </p>
+                      </article>
+                    )}
                     <article>
                       <span>设计逻辑</span>
                       <p>{effectiveQuestionFocus.designRationale ?? '把原问题拆成几个可观察维度，再安排生活事件分别考察。'}</p>
@@ -2599,6 +2624,14 @@ function QuestionGuidanceRail({
               : questionFocus.evidenceTargets).join('、')}
           </p>
         </article>
+        {questionFocus.reasonablenessDiscussion && (
+          <article tabIndex={0}>
+            <span>理解是否合理</span>
+            <strong>{questionFocus.reasonablenessDiscussion.plausibleInterpretation}</strong>
+            <p>可能合理：{questionFocus.reasonablenessDiscussion.whyReasonable.join('、')}</p>
+            <p>需要讨论：{questionFocus.reasonablenessDiscussion.discussionPrompt}</p>
+          </article>
+        )}
         <article tabIndex={0}>
           <span>事件设计逻辑</span>
           <strong>{questionFocus.designRationale ?? '把抽象问题转成多个可观察的生活事件。'}</strong>

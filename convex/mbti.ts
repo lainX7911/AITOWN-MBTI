@@ -143,6 +143,14 @@ const questionFocus = v.object({
     changeConditions: v.array(v.string()),
     nextValidationQuestions: v.array(v.string()),
   })),
+  reasonablenessDiscussion: v.optional(v.object({
+    plausibleInterpretation: v.string(),
+    whyReasonable: v.array(v.string()),
+    possibleMisreads: v.array(v.string()),
+    assumptionsToConfirm: v.array(v.string()),
+    alternativeFrames: v.array(v.string()),
+    discussionPrompt: v.string(),
+  })),
   analysisDimensions: v.optional(v.array(v.string())),
   designRationale: v.optional(v.string()),
   theoreticalBasis: v.optional(v.array(v.string())),
@@ -235,6 +243,7 @@ type QuestionFocusInput = {
   drivingTension: string;
   observationGoal: string;
   decisionStructure?: DecisionStructureInput;
+  reasonablenessDiscussion?: ReasonablenessDiscussionInput;
   analysisDimensions?: string[];
   designRationale?: string;
   theoreticalBasis?: string[];
@@ -267,6 +276,15 @@ type QuestionFocusInput = {
     consequenceOptions?: EventConsequenceOptionInput[];
   }>;
   resolutionCriteria: string;
+};
+
+type ReasonablenessDiscussionInput = {
+  plausibleInterpretation: string;
+  whyReasonable: string[];
+  possibleMisreads: string[];
+  assumptionsToConfirm: string[];
+  alternativeFrames: string[];
+  discussionPrompt: string;
 };
 
 type EventStakesInput = {

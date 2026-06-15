@@ -44,11 +44,21 @@ const decisionStructureInput = v.object({
   nextValidationQuestions: v.array(v.string()),
 });
 
+const reasonablenessDiscussionInput = v.object({
+  plausibleInterpretation: v.string(),
+  whyReasonable: v.array(v.string()),
+  possibleMisreads: v.array(v.string()),
+  assumptionsToConfirm: v.array(v.string()),
+  alternativeFrames: v.array(v.string()),
+  discussionPrompt: v.string(),
+});
+
 const questionFocusInput = v.object({
   coreQuestion: v.string(),
   drivingTension: v.string(),
   observationGoal: v.string(),
   decisionStructure: v.optional(decisionStructureInput),
+  reasonablenessDiscussion: v.optional(reasonablenessDiscussionInput),
   analysisDimensions: v.optional(v.array(v.string())),
   designRationale: v.optional(v.string()),
   theoreticalBasis: v.optional(v.array(v.string())),
@@ -112,6 +122,7 @@ type QuestionFocusInput = {
   drivingTension: string;
   observationGoal: string;
   decisionStructure?: DecisionStructureInput;
+  reasonablenessDiscussion?: ReasonablenessDiscussionInput;
   analysisDimensions: string[];
   designRationale: string;
   theoreticalBasis: string[];
@@ -144,6 +155,15 @@ type QuestionFocusInput = {
     consequenceOptions?: EventConsequenceOptionInput[];
   }>;
   resolutionCriteria: string;
+};
+
+type ReasonablenessDiscussionInput = {
+  plausibleInterpretation: string;
+  whyReasonable: string[];
+  possibleMisreads: string[];
+  assumptionsToConfirm: string[];
+  alternativeFrames: string[];
+  discussionPrompt: string;
 };
 
 type EventStakesInput = {
@@ -477,6 +497,7 @@ async function planQuestionSkeleton(
           '这套拆解必须适用于任意问题，不能依赖题库模板；即使问题看似简单，也要拆成真实决策、关键未知、隐藏需求、风险盲点和验证路径。',
           '不要生成 eventPlans。不要写角色台词。不要写咨询师建议。只输出 JSON。',
           'decisionStructure 是后续事件和最终报告的主轴，必须具体、完整、贴近原问题，不要只写“沟通、情绪、行动力”这类空泛词。',
+          'reasonablenessDiscussion 必须单独讨论“系统这样理解用户问题是否合理”：说明合理之处、可能误读、需要向用户确认的假设，以及另一种可行拆解方式。',
           'decisionStructure 必须达到最低数量：decisionDimensions 6-10 个，personalityLevers 3-8 个，unknowns 4-10 个，hiddenNeeds 3-8 个，riskBlindspots 3-8 个，possiblePaths 2-6 个，changeConditions 3-8 个，nextValidationQuestions 3-8 个。不要只给 2-3 条。',
           '拆解维度必须覆盖现实属性，不只覆盖心理属性。根据问题相关性纳入：年龄/阶段、外貌或吸引力、身体健康、金钱、住处、家庭责任、法律/身份、时间精力、社会评价、长期退出成本等具体变量。',
           'startupQuestions 必须直白、生活化、能马上回答，必须直接服务用户原问题。',
@@ -511,6 +532,14 @@ async function planQuestionSkeleton(
           '    ],',
           '    "changeConditions": ["哪些条件变化会改变判断"],',
           '    "nextValidationQuestions": ["下一步应该向用户或现实生活验证的具体问题"]',
+          '  },',
+          '  "reasonablenessDiscussion": {',
+          '    "plausibleInterpretation": "一句话说明系统当前如何理解用户真正关心的事",',
+          '    "whyReasonable": ["2-4 条说明为什么这种理解站得住脚"],',
+          '    "possibleMisreads": ["2-4 条说明系统可能误读或过度推断了什么"],',
+          '    "assumptionsToConfirm": ["2-4 个需要和用户确认的关键假设"],',
+          '    "alternativeFrames": ["1-3 种也合理的替代拆解角度"],',
+          '    "discussionPrompt": "一句适合展示给用户、邀请其修正拆解的问题"',
           '  },',
           '  "analysisDimensions": ["6-10 个从用户问题拆出的不同观察维度，写生活化，不要写抽象术语"],',
           '  "designRationale": "1-2 句话说明为什么这些问题和后续事件能服务原问题",',
@@ -547,6 +576,7 @@ async function planQuestionSkeleton(
   const drivingTension = cleanRequiredString(parsed.drivingTension, 180);
   const observationGoal = cleanRequiredString(parsed.observationGoal, 180);
   const decisionStructure = cleanDecisionStructure(parsed.decisionStructure);
+  const reasonablenessDiscussion = cleanReasonablenessDiscussion(parsed.reasonablenessDiscussion);
   const designRationale = cleanRequiredString(parsed.designRationale, 220);
   const resolutionCriteria = cleanRequiredString(parsed.resolutionCriteria, 180);
   const startupQuestions = cleanStartupQuestions(parsed.startupQuestions, requiredStartupQuestionCount);
@@ -573,6 +603,9 @@ async function planQuestionSkeleton(
   if (!decisionStructure) {
     issues.push('缺少合格 decisionStructure：需要真实决策、至少 5 个维度、关键未知、隐藏需求、风险盲点和验证问题');
   }
+  if (!reasonablenessDiscussion) {
+    issues.push('缺少 reasonablenessDiscussion：需要讨论拆解为何合理、可能误读、待确认假设和替代拆解');
+  }
   if (!designRationale) {
     issues.push('缺少 designRationale');
   }
@@ -596,6 +629,7 @@ async function planQuestionSkeleton(
       drivingTension: drivingTension!,
       observationGoal: observationGoal!,
       decisionStructure,
+      reasonablenessDiscussion,
       analysisDimensions,
       designRationale: designRationale!,
       theoreticalBasis,
@@ -1035,6 +1069,37 @@ function cleanDecisionStructure(value: unknown): DecisionStructureInput | undefi
     possiblePaths,
     changeConditions,
     nextValidationQuestions,
+  };
+}
+
+function cleanReasonablenessDiscussion(value: unknown): ReasonablenessDiscussionInput | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  const plausibleInterpretation = cleanRequiredString(raw.plausibleInterpretation, 180);
+  const whyReasonable = cleanPlannerList(raw.whyReasonable, [], 2, 4, 90);
+  const possibleMisreads = cleanPlannerList(raw.possibleMisreads, [], 2, 4, 90);
+  const assumptionsToConfirm = cleanPlannerList(raw.assumptionsToConfirm, [], 2, 4, 90);
+  const alternativeFrames = cleanPlannerList(raw.alternativeFrames, [], 1, 3, 90);
+  const discussionPrompt = cleanRequiredString(raw.discussionPrompt, 140);
+  if (
+    !plausibleInterpretation ||
+    whyReasonable.length < 2 ||
+    possibleMisreads.length < 2 ||
+    assumptionsToConfirm.length < 2 ||
+    alternativeFrames.length < 1 ||
+    !discussionPrompt
+  ) {
+    return undefined;
+  }
+  return {
+    plausibleInterpretation,
+    whyReasonable,
+    possibleMisreads,
+    assumptionsToConfirm,
+    alternativeFrames,
+    discussionPrompt,
   };
 }
 
