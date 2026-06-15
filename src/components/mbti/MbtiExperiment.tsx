@@ -133,6 +133,15 @@ type ReasonablenessDiscussion = {
   discussionPrompt: string;
 };
 
+type ValidationTarget = {
+  id: string;
+  label: string;
+  source: 'decisionDimension' | 'unknown' | 'hiddenNeed' | 'riskBlindspot' | 'startupAnswer';
+  priority: 'must' | 'should' | 'optional';
+  whatWouldTestIt: string;
+  badEventPattern?: string;
+};
+
 type UserResponse = {
   _id: string;
   experimentId: string;
@@ -187,6 +196,7 @@ type QuestionFocus = {
   observationGoal: string;
   decisionStructure?: DecisionStructure;
   reasonablenessDiscussion?: ReasonablenessDiscussion;
+  validationTargets?: ValidationTarget[];
   analysisDimensions?: string[];
   designRationale?: string;
   theoreticalBasis?: string[];
@@ -213,6 +223,8 @@ type QuestionFocus = {
     questionLink?: string;
     informationGoal: string;
     judgmentSignal: string;
+    coveredTargetIds?: string[];
+    whyThisTestsIt?: string;
     responseOptions?: string[];
   }>;
   resolutionCriteria: string;
@@ -2334,6 +2346,8 @@ function QuestionGuidanceRail({
     testedHypotheses?: string[];
     questionLink?: string;
     informationGoal?: string;
+    coveredTargetIds?: string[];
+    whyThisTestsIt?: string;
     locationKey?: string;
     expectedSignals?: string[];
     responseOptions?: string[];
@@ -3217,6 +3231,8 @@ function EventProgressCard({
     testedHypotheses?: string[];
     questionLink?: string;
     informationGoal?: string;
+    coveredTargetIds?: string[];
+    whyThisTestsIt?: string;
     expectedSignals?: string[];
     responseOptions?: string[];
     residentRoles?: string[];

@@ -23,6 +23,21 @@ const startupAnswer = v.object({
   note: v.optional(v.string()),
 });
 
+const validationTargetInput = v.object({
+  id: v.string(),
+  label: v.string(),
+  source: v.union(
+    v.literal('decisionDimension'),
+    v.literal('unknown'),
+    v.literal('hiddenNeed'),
+    v.literal('riskBlindspot'),
+    v.literal('startupAnswer'),
+  ),
+  priority: v.union(v.literal('must'), v.literal('should'), v.literal('optional')),
+  whatWouldTestIt: v.string(),
+  badEventPattern: v.optional(v.string()),
+});
+
 const decisionStructureInput = v.object({
   surfaceQuestion: v.string(),
   underlyingDecision: v.string(),
@@ -59,6 +74,7 @@ const questionFocusInput = v.object({
   observationGoal: v.string(),
   decisionStructure: v.optional(decisionStructureInput),
   reasonablenessDiscussion: v.optional(reasonablenessDiscussionInput),
+  validationTargets: v.optional(v.array(validationTargetInput)),
   analysisDimensions: v.optional(v.array(v.string())),
   designRationale: v.optional(v.string()),
   theoreticalBasis: v.optional(v.array(v.string())),
@@ -86,6 +102,8 @@ const questionFocusInput = v.object({
     questionLink: v.optional(v.string()),
     informationGoal: v.string(),
     judgmentSignal: v.string(),
+    coveredTargetIds: v.optional(v.array(v.string())),
+    whyThisTestsIt: v.optional(v.string()),
     responseOptions: v.optional(v.array(v.string())),
     stakes: v.optional(v.object({
       timeCost: v.optional(v.string()),
@@ -114,7 +132,11 @@ function startupQuestionCountForEvents(targetEventCount: number | undefined) {
 }
 
 export function requiredEventPlanCountForTarget(targetEventCount: number | undefined) {
-  return Math.max(3, Math.min(20, Math.floor(targetEventCount ?? 6)));
+  const target = Math.max(1, Math.floor(targetEventCount ?? 6));
+  if (target <= 1) {
+    return 1;
+  }
+  return Math.min(3, target);
 }
 
 type QuestionFocusInput = {
@@ -123,6 +145,7 @@ type QuestionFocusInput = {
   observationGoal: string;
   decisionStructure?: DecisionStructureInput;
   reasonablenessDiscussion?: ReasonablenessDiscussionInput;
+  validationTargets?: ValidationTargetInput[];
   analysisDimensions: string[];
   designRationale: string;
   theoreticalBasis: string[];
@@ -150,11 +173,22 @@ type QuestionFocusInput = {
     questionLink: string;
     informationGoal: string;
     judgmentSignal: string;
+    coveredTargetIds?: string[];
+    whyThisTestsIt?: string;
     responseOptions?: string[];
     stakes?: EventStakesInput;
     consequenceOptions?: EventConsequenceOptionInput[];
   }>;
   resolutionCriteria: string;
+};
+
+type ValidationTargetInput = {
+  id: string;
+  label: string;
+  source: 'decisionDimension' | 'unknown' | 'hiddenNeed' | 'riskBlindspot' | 'startupAnswer';
+  priority: 'must' | 'should' | 'optional';
+  whatWouldTestIt: string;
+  badEventPattern?: string;
 };
 
 type ReasonablenessDiscussionInput = {
@@ -302,13 +336,18 @@ export const planAndCreateSceneRequest = action({
       userEntryMode: args.userEntryMode,
       startupAnswers: answers,
     });
+    const validationTargets = buildValidationTargets(skeleton, answers, requiredEventPlanCount);
+    const targetSkeleton = {
+      ...skeleton,
+      validationTargets,
+    };
     const authenticityFeedback = await ctx.runQuery(makeFunctionReference<'query'>('mbti:collectTownAuthenticityFeedback'), {
       townId: args.townId,
       question: args.question,
     }) as AuthenticityFeedbackInput[];
     const planningResult = await planQuestionEventsWithRetries(
       args.question,
-      skeleton,
+      targetSkeleton,
       answers,
       requiredEventPlanCount,
       3,
@@ -319,6 +358,7 @@ export const planAndCreateSceneRequest = action({
       ? {
           ...planningResult.plannedFocus,
           startupQuestions: skeleton.startupQuestions,
+          validationTargets,
         }
       : null;
     if (
@@ -329,7 +369,7 @@ export const planAndCreateSceneRequest = action({
       const issueText = planningResult.issues.length > 0
         ? `失败原因：${planningResult.issues.join(' | ')}。`
         : '';
-      throw new Error(`基于启动前回应生成情境探针连续 3 次仍失败：本轮需要至少 ${requiredEventPlanCount} 个合格事件，不会使用兜底模板。${issueText}请检查本地模型服务是否稳定，或调整问题后再进入。`);
+      throw new Error(`基于启动前回应生成情境探针连续 3 次仍失败：启动阶段只需要 ${requiredEventPlanCount} 个合格种子事件，后续事件会随时间线和证据动态生成，不会使用兜底模板。${issueText}请检查本地模型服务是否稳定，或调整问题后再进入。`);
     }
     return await ctx.runMutation(makeFunctionReference<'mutation'>('mbtiTown:createSceneRequest'), {
       townId: args.townId,
@@ -671,6 +711,7 @@ async function planQuestionEvents(
       return `${index + 1}. ${answer.question} => ${answer.answer}${note}`;
     })
     .join('\n') || '用户尚未回答启动前校准。请生成低假设、可观察、可延迟的扰动候选，不要把模拟反应当作用户真实回答。';
+  const validationTargetText = formatValidationTargetsForPrompt(skeleton.validationTargets);
   const authenticityFeedbackText = formatAuthenticityFeedbackForPrompt(authenticityFeedback);
   const rejectedAuthenticityPatternText = formatRejectedAuthenticityPatterns(authenticityFeedback);
   const { content } = await chatCompletion({
@@ -681,6 +722,8 @@ async function planQuestionEvents(
             '你是 MBTI 小镇的情境探针设计器。',
             '这是第二段：第一段的问题拆解和启动前关键问题已经合格。你只需要生成 eventPlans。',
             'eventPlans 必须服务 decisionStructure：每个事件至少测试一个 decisionDimensions、unknowns、hiddenNeeds 或 riskBlindspots。不要把事件设计成预测答案，而要制造可观察证据，帮助用户发现可能结果和自己没意识到的变量。',
+            'eventPlans 必须声明 coveredTargetIds 和 whyThisTestsIt。coveredTargetIds 只能使用本轮验证目标里的 id；whyThisTestsIt 必须解释这个具体事件如何测试该目标。',
+            '首批/本批合格事件必须覆盖所有 priority=must 的验证目标；如果一个 must 目标无法设计成真实事件，宁可重写事件，不要省略 coveredTargetIds。',
             '你必须把用户的启动前真实回答作为事件设计的方向盘：事件的主题、顺序、强度和冲突点都要受这些回答影响。',
             '如果用户回答表达了偏好、底线、不能接受的条件或生活方式，前几个事件必须直接测试这些偏好和底线。',
             '如果事件里出现了用户没有声明过的既成事实、人物关系、生活条件、资源状态或限制条件，必须先把它改成待验证情境，不能当作真实背景。',
@@ -718,11 +761,12 @@ async function planQuestionEvents(
           role: 'user',
           content: [
             `用户问题：${question}`,
-            `生成尝试：第 ${attempt} 次，第 ${batch} 批。当前累计需要至少 ${requiredEventPlanCount} 个合格事件，本批请输出 ${candidateCount} 个候选。`,
+            `生成尝试：第 ${attempt} 次，第 ${batch} 批。启动阶段只需要 ${requiredEventPlanCount} 个合格种子事件，后续事件会根据已发生证据动态生成；本批请输出 ${candidateCount} 个候选。`,
             `本轮入镇稳定指纹：${runVariant}`,
             `已接受事件，补批次必须避开：\n${existingPlanText}`,
             `已经合格的观察维度：${skeleton.analysisDimensions.join('；')}`,
             `问题结构：${formatDecisionStructureForPrompt(skeleton.decisionStructure)}`,
+            `本轮验证目标：\n${validationTargetText}`,
             `观察目标：${skeleton.observationGoal}`,
             `证据方向：${skeleton.evidenceTargets.join('；')}`,
             `事件触发点：${skeleton.eventBeats.join('；')}`,
@@ -738,11 +782,13 @@ async function planQuestionEvents(
             '      "locationKey": "cafe/square/clinic/school/workshop/office/station/shop 之一",',
             '      "scene": "具体地图设施和人物，如：社区办公室里，我和常驻居民A正在处理与本问题相关的现实条件；只有用户显式带入对象时才可写关键对象",',
             '      "trigger": "发生的具体事，必须直接测试本次问题的关键变量；不要写与原问题弱相关的通用小阻碍",',
-            '      "participants": ["我", "常驻居民A"] 或在用户显式带入对象时 ["我", "关键对象", "常驻居民A"],',
+            '      "participants": ["我", "常驻居民A"],',
             '      "observationAxis": "这个事件对应哪个观察维度，如：情绪调节",',
             '      "questionLink": "说明它和用户原问题的逻辑关系，如：模拟计划被外部波动打断后是否还能恢复行动",',
             '      "informationGoal": "这个事件为了看什么，如：看我会不会直接表达不安",',
             '      "judgmentSignal": "什么表现可用于判断，如：追问且能说清需求偏修复；冷处理或离开偏回避",',
+            '      "coveredTargetIds": ["必须覆盖的验证目标 id；至少 1 个"],',
+            '      "whyThisTestsIt": "说明这个具体事件如何测试 coveredTargetIds 对应目标，不能只复述目标名",',
             '      "responseOptions": ["3-4 个第一人称、具体、互斥的真实行动选项；必须围绕本事件，不要写抽象策略词，如不要写稳住基本盘"],',
             '      "stakes": { "timeCost": "时间代价", "moneyCost": "金钱代价", "relationshipCost": "关系代价", "opportunityCost": "机会代价" },',
             '      "consequenceOptions": [',
@@ -761,7 +807,7 @@ async function planQuestionEvents(
   if (!parsed) {
       return { issues: ['模型输出不是可解析 JSON'] };
   }
-  const eventPlans = cleanEventPlans(parsed.eventPlans, skeleton.analysisDimensions);
+  const eventPlans = cleanEventPlans(parsed.eventPlans, skeleton.analysisDimensions, skeleton.validationTargets);
   if (!eventPlans || eventPlans.length === 0) {
     const rawCount = Array.isArray(parsed.eventPlans) ? parsed.eventPlans.length : 0;
     return { issues: [`本批没有合格事件：原始 ${rawCount} 个`] };
@@ -811,6 +857,107 @@ function stableHash(value: string) {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+export function buildValidationTargets(
+  skeleton: QuestionFocusInput,
+  startupAnswers: StartupAnswerInput[],
+  requiredEventPlanCount: number,
+): ValidationTargetInput[] {
+  const maxMustTargets = Math.max(1, Math.min(requiredEventPlanCount, 6));
+  const candidates: Array<Omit<ValidationTargetInput, 'id' | 'priority'> & { prioritySeed: 'must' | 'should' }> = [];
+  for (const dimension of skeleton.decisionStructure?.decisionDimensions ?? []) {
+    candidates.push({
+      label: dimension.label,
+      source: 'decisionDimension',
+      prioritySeed: 'must',
+      whatWouldTestIt: [
+        dimension.whyItMatters,
+        dimension.userBlindSpot ? `同时测试用户是否意识到：${dimension.userBlindSpot}` : '',
+      ].filter(Boolean).join(' '),
+      badEventPattern: `只把“${dimension.label}”写成观察名，但没有现实代价或具体选择。`,
+    });
+  }
+  for (const unknown of skeleton.decisionStructure?.unknowns ?? []) {
+    candidates.push({
+      label: compactPromptText(unknown, 36),
+      source: 'unknown',
+      prioritySeed: 'must',
+      whatWouldTestIt: `把这个未知条件变成可确认的现实情境：${unknown}`,
+      badEventPattern: '事件默认未知条件已经成立，而不是把它作为待验证条件。',
+    });
+  }
+  for (const risk of skeleton.decisionStructure?.riskBlindspots ?? []) {
+    candidates.push({
+      label: compactPromptText(risk, 36),
+      source: 'riskBlindspot',
+      prioritySeed: 'must',
+      whatWouldTestIt: `制造能暴露这个风险盲点的现实代价：${risk}`,
+      badEventPattern: '事件只有轻微情绪波动，没有触及风险成本。',
+    });
+  }
+  for (const need of skeleton.decisionStructure?.hiddenNeeds ?? []) {
+    candidates.push({
+      label: compactPromptText(need, 36),
+      source: 'hiddenNeed',
+      prioritySeed: 'should',
+      whatWouldTestIt: `观察用户是否在保护或追求这个隐含需求：${need}`,
+      badEventPattern: '事件只考察外部事务，没有逼近用户的隐含需求。',
+    });
+  }
+  for (const answer of startupAnswers) {
+    candidates.unshift({
+      label: compactPromptText(answer.answer, 36),
+      source: 'startupAnswer',
+      prioritySeed: 'must',
+      whatWouldTestIt: `直接测试用户启动回答里的偏好、底线或限制：${answer.question} => ${answer.answer}${answer.note ? `；${answer.note}` : ''}`,
+      badEventPattern: '事件不触碰用户已经声明的偏好、底线或现实限制。',
+    });
+  }
+
+  const seen = new Set<string>();
+  let mustCount = 0;
+  const targets: ValidationTargetInput[] = [];
+  for (const candidate of candidates) {
+    const key = normalizePlanningSeedPart(`${candidate.source}:${candidate.label}`);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const priority = candidate.prioritySeed === 'must' && mustCount < maxMustTargets
+      ? 'must'
+      : candidate.prioritySeed === 'must'
+      ? 'should'
+      : 'optional';
+    if (priority === 'must') {
+      mustCount += 1;
+    }
+    targets.push({
+      id: `target_${candidate.source}_${stableHash(key).toString(36)}`,
+      label: candidate.label,
+      source: candidate.source,
+      priority,
+      whatWouldTestIt: compactPromptText(candidate.whatWouldTestIt, 140),
+      badEventPattern: candidate.badEventPattern,
+    });
+  }
+  return targets.slice(0, 12);
+}
+
+function formatValidationTargetsForPrompt(targets: ValidationTargetInput[] | undefined) {
+  if (!targets?.length) {
+    return '暂无结构化验证目标；请至少围绕问题结构里的关键未知、风险盲点和现实维度设计事件。';
+  }
+  return targets
+    .map((target, index) => [
+      `${index + 1}. id=${target.id}`,
+      `priority=${target.priority}`,
+      `source=${target.source}`,
+      `label=${target.label}`,
+      `测试方式=${target.whatWouldTestIt}`,
+      target.badEventPattern ? `避免=${target.badEventPattern}` : '',
+    ].filter(Boolean).join('；'))
+    .join('\n');
 }
 
 export function formatAuthenticityFeedbackForPrompt(feedback: AuthenticityFeedbackInput[] | undefined) {
@@ -1252,10 +1399,16 @@ function inferStartupQuestionMaxSelections(question: string) {
   return 1;
 }
 
-export function cleanEventPlans(value: unknown, analysisDimensions: string[]): QuestionFocusInput['eventPlans'] {
+export function cleanEventPlans(
+  value: unknown,
+  analysisDimensions: string[],
+  validationTargets?: ValidationTargetInput[],
+): QuestionFocusInput['eventPlans'] {
   if (!Array.isArray(value)) {
     return undefined;
   }
+  const targetMap = new Map((validationTargets ?? []).map((target) => [target.id, target]));
+  const requiresCoverage = targetMap.size > 0;
   const cleanedPlans = value
     .map((item, index) => {
       if (!item || typeof item !== 'object') {
@@ -1268,24 +1421,43 @@ export function cleanEventPlans(value: unknown, analysisDimensions: string[]): Q
       const scene = cleanRequiredString(raw.scene, 80);
       const trigger = cleanRequiredString(raw.trigger, 150);
       const participants = cleanPlannerList(raw.participants, [], 1, 4, 12);
-      const questionLink = cleanRequiredString(raw.questionLink, 110);
-      const informationGoal = cleanRequiredString(raw.informationGoal, 80);
-      const judgmentSignal = cleanRequiredString(raw.judgmentSignal, 100);
-      const responseOptions = cleanResponseOptions(raw.responseOptions);
-      const stakes = cleanEventStakes(raw.stakes);
-      const consequenceOptions = cleanConsequenceOptions(raw.consequenceOptions);
+      const observationAxis = cleanRequiredString(raw.observationAxis, 64) ?? axis;
+      const questionLink = cleanRequiredString(raw.questionLink, 110) ??
+        `用“${observationAxis}”这一现实变量继续验证用户原问题。`;
+      const informationGoal = cleanRequiredString(raw.informationGoal, 80) ??
+        `观察用户在“${observationAxis}”受压时会如何取舍。`;
+      const judgmentSignal = cleanRequiredString(raw.judgmentSignal, 100) ??
+        `看用户是否能提出具体边界、主动核对事实或调整安排。`;
+      const coveredTargetIds = cleanPlannerList(raw.coveredTargetIds, [], 1, 4, 48)
+        .filter((id) => targetMap.has(id));
+      const whyThisTestsIt = cleanRequiredString(raw.whyThisTestsIt, 160);
+      const responseOptions = cleanResponseOptions(raw.responseOptions) ??
+        fallbackResponseOptions(observationAxis);
+      const stakes = cleanEventStakes(raw.stakes) ?? fallbackEventStakes(trigger ?? '', observationAxis);
+      const consequenceOptions = cleanConsequenceOptions(raw.consequenceOptions) ??
+        fallbackConsequenceOptions(responseOptions, observationAxis);
       const text = [title, scene, trigger, questionLink, informationGoal, judgmentSignal].join(' ');
       if (
         !title ||
         !scene ||
         !trigger ||
         participants.length === 0 ||
-        !questionLink ||
-        !informationGoal ||
-        !judgmentSignal ||
-        !responseOptions ||
         isGenericTownErrandEvent(text) ||
-        !hasConcreteLifeAnchor(trigger)
+        !hasConcreteLifeAnchor(trigger) ||
+        !eventPlanSatisfiesValidationTargets({
+          requiresCoverage,
+          coveredTargetIds,
+          whyThisTestsIt,
+          targetMap,
+          text: [
+            text,
+            trigger,
+            observationAxis,
+            responseOptions.join(' '),
+            whyThisTestsIt ?? '',
+            Object.values(stakes ?? {}).join(' '),
+          ].join(' '),
+        })
       ) {
         return null;
       }
@@ -1296,10 +1468,12 @@ export function cleanEventPlans(value: unknown, analysisDimensions: string[]): Q
         scene,
         trigger,
         participants,
-        observationAxis: axis,
+        observationAxis,
         questionLink,
         informationGoal,
         judgmentSignal,
+        coveredTargetIds: coveredTargetIds.length > 0 ? coveredTargetIds : undefined,
+        whyThisTestsIt,
         responseOptions,
         stakes,
         consequenceOptions,
@@ -1309,7 +1483,90 @@ export function cleanEventPlans(value: unknown, analysisDimensions: string[]): Q
     .slice(0, 20);
   const diversePlans = diversifyEventPlanMotifs(cleanedPlans);
   const plans = diversifyEventPlanLocations(diversePlans);
+  if (!eventPlanBatchCoversMustTargets(plans, validationTargets)) {
+    return undefined;
+  }
   return plans.length > 0 ? plans : undefined;
+}
+
+function eventPlanSatisfiesValidationTargets(args: {
+  requiresCoverage: boolean;
+  coveredTargetIds: string[];
+  whyThisTestsIt: string | undefined;
+  targetMap: Map<string, ValidationTargetInput>;
+  text: string;
+}) {
+  if (!args.requiresCoverage) {
+    return true;
+  }
+  if (args.coveredTargetIds.length === 0 || !args.whyThisTestsIt) {
+    return false;
+  }
+  return args.coveredTargetIds.every((id) => {
+    const target = args.targetMap.get(id);
+    return target ? textAlignsWithValidationTarget(args.text, target) : false;
+  });
+}
+
+function eventPlanBatchCoversMustTargets(
+  plans: NonNullable<QuestionFocusInput['eventPlans']>,
+  targets: ValidationTargetInput[] | undefined,
+) {
+  const mustTargetIds = (targets ?? [])
+    .filter((target) => target.priority === 'must')
+    .map((target) => target.id);
+  if (mustTargetIds.length === 0) {
+    return true;
+  }
+  const covered = new Set(plans.flatMap((plan) => plan.coveredTargetIds ?? []));
+  return mustTargetIds.every((id) => covered.has(id));
+}
+
+function textAlignsWithValidationTarget(text: string, target: ValidationTargetInput) {
+  const normalizedText = normalizeCoverageText(text);
+  const targetTokens = coverageTokens(`${target.label} ${target.whatWouldTestIt}`);
+  if (targetTokens.length === 0) {
+    return false;
+  }
+  return targetTokens.some((token) => normalizedText.includes(token));
+}
+
+function normalizeCoverageText(value: string) {
+  return value.replace(/\s+/g, '').toLowerCase();
+}
+
+function coverageTokens(value: string) {
+  const stopWords = new Set([
+    '用户',
+    '测试',
+    '是否',
+    '这个',
+    '现实',
+    '条件',
+    '事件',
+    '说明',
+    '确认',
+    '观察',
+    '直接',
+    '边界',
+  ]);
+  const normalized = normalizeCoverageText(value);
+  const tokens = new Set<string>();
+  for (const match of normalized.matchAll(/[\u4e00-\u9fa5]{2,}/g)) {
+    const chunk = match[0];
+    for (let length = Math.min(5, chunk.length); length >= 2; length -= 1) {
+      for (let index = 0; index + length <= chunk.length; index += 1) {
+        const token = chunk.slice(index, index + length);
+        if (!stopWords.has(token)) {
+          tokens.add(token);
+        }
+      }
+    }
+  }
+  for (const match of normalized.matchAll(/[a-z0-9_]{3,}/g)) {
+    tokens.add(match[0]);
+  }
+  return [...tokens].slice(0, 24);
 }
 
 function diversifyEventPlanMotifs(
@@ -1553,6 +1810,48 @@ function cleanConsequenceOptions(value: unknown): EventConsequenceOptionInput[] 
     .filter((item): item is EventConsequenceOptionInput => Boolean(item))
     .slice(0, 4);
   return options.length >= 2 ? options : undefined;
+}
+
+function fallbackResponseOptions(axis: string) {
+  const label = compactPromptText(axis || '当前条件', 18);
+  return [
+    `我先问清${label}的具体限制`,
+    '我暂缓决定，先保留原计划',
+    '这个条件会改变我的选择',
+  ];
+}
+
+function fallbackEventStakes(trigger: string, axis: string): EventStakesInput {
+  const label = compactPromptText(axis || trigger || '这件事', 28);
+  return {
+    timeCost: `需要额外花时间核对${label}，原计划会被推迟。`,
+    relationshipCost: `如果含糊处理，相关居民会更难判断我的真实边界。`,
+  };
+}
+
+function fallbackConsequenceOptions(
+  responseOptions: string[],
+  axis: string,
+): EventConsequenceOptionInput[] {
+  const label = compactPromptText(axis || '当前条件', 18);
+  const [first, second, third] = responseOptions;
+  return [
+    {
+      userAction: first ?? `问清${label}`,
+      relationshipDelta: '对方会更清楚我在认真评估，而不是直接逃避。',
+      unlocks: `后续可以继续验证${label}是否能被稳定接受。`,
+    },
+    {
+      userAction: second ?? '暂缓决定',
+      relationshipDelta: '关系热度可能下降，但边界会更清楚。',
+      unlocks: `后续会转向观察拖延、回避或替代方案。`,
+    },
+    {
+      userAction: third ?? '调整选择',
+      relationshipDelta: '对方会看到这个条件对我有真实影响。',
+      unlocks: `后续需要重新评估${label}和原问题的关系。`,
+    },
+  ];
 }
 
 function isEmptyImpactText(text: string) {

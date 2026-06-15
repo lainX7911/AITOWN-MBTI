@@ -151,6 +151,20 @@ const questionFocus = v.object({
     alternativeFrames: v.array(v.string()),
     discussionPrompt: v.string(),
   })),
+  validationTargets: v.optional(v.array(v.object({
+    id: v.string(),
+    label: v.string(),
+    source: v.union(
+      v.literal('decisionDimension'),
+      v.literal('unknown'),
+      v.literal('hiddenNeed'),
+      v.literal('riskBlindspot'),
+      v.literal('startupAnswer'),
+    ),
+    priority: v.union(v.literal('must'), v.literal('should'), v.literal('optional')),
+    whatWouldTestIt: v.string(),
+    badEventPattern: v.optional(v.string()),
+  }))),
   analysisDimensions: v.optional(v.array(v.string())),
   designRationale: v.optional(v.string()),
   theoreticalBasis: v.optional(v.array(v.string())),
@@ -178,6 +192,8 @@ const questionFocus = v.object({
     questionLink: v.optional(v.string()),
     informationGoal: v.string(),
     judgmentSignal: v.string(),
+    coveredTargetIds: v.optional(v.array(v.string())),
+    whyThisTestsIt: v.optional(v.string()),
     responseOptions: v.optional(v.array(v.string())),
     stakes: v.optional(v.object({
       timeCost: v.optional(v.string()),
@@ -244,6 +260,7 @@ type QuestionFocusInput = {
   observationGoal: string;
   decisionStructure?: DecisionStructureInput;
   reasonablenessDiscussion?: ReasonablenessDiscussionInput;
+  validationTargets?: ValidationTargetInput[];
   analysisDimensions?: string[];
   designRationale?: string;
   theoreticalBasis?: string[];
@@ -271,11 +288,22 @@ type QuestionFocusInput = {
     questionLink?: string;
     informationGoal: string;
     judgmentSignal: string;
+    coveredTargetIds?: string[];
+    whyThisTestsIt?: string;
     responseOptions?: string[];
     stakes?: EventStakesInput;
     consequenceOptions?: EventConsequenceOptionInput[];
   }>;
   resolutionCriteria: string;
+};
+
+type ValidationTargetInput = {
+  id: string;
+  label: string;
+  source: 'decisionDimension' | 'unknown' | 'hiddenNeed' | 'riskBlindspot' | 'startupAnswer';
+  priority: 'must' | 'should' | 'optional';
+  whatWouldTestIt: string;
+  badEventPattern?: string;
 };
 
 type ReasonablenessDiscussionInput = {
@@ -520,6 +548,8 @@ export const createExperiment = mutation({
         testedHypotheses: event.testedHypotheses,
         questionLink: event.questionLink,
         informationGoal: event.informationGoal,
+        coveredTargetIds: event.coveredTargetIds,
+        whyThisTestsIt: event.whyThisTestsIt,
         locationKey: event.locationKey,
         stagingPoint: event.stagingPoint,
         expectedSignals: event.expectedSignals,
@@ -5253,6 +5283,8 @@ export function buildSeededEvents(
         testedHypotheses: (focus?.outcomeHypotheses ?? []).map((hypothesis) => hypothesis.label).slice(0, 4),
         questionLink: plan.questionLink ?? '把用户问题里的抽象担忧转成一次可观察的生活选择',
         informationGoal: plan.informationGoal,
+        coveredTargetIds: plan.coveredTargetIds,
+        whyThisTestsIt: plan.whyThisTestsIt,
         locationKey,
         stagingPoint,
         expectedSignals,

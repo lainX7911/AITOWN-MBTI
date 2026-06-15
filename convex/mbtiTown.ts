@@ -54,6 +54,20 @@ const questionFocus = v.object({
     alternativeFrames: v.array(v.string()),
     discussionPrompt: v.string(),
   })),
+  validationTargets: v.optional(v.array(v.object({
+    id: v.string(),
+    label: v.string(),
+    source: v.union(
+      v.literal('decisionDimension'),
+      v.literal('unknown'),
+      v.literal('hiddenNeed'),
+      v.literal('riskBlindspot'),
+      v.literal('startupAnswer'),
+    ),
+    priority: v.union(v.literal('must'), v.literal('should'), v.literal('optional')),
+    whatWouldTestIt: v.string(),
+    badEventPattern: v.optional(v.string()),
+  }))),
   analysisDimensions: v.optional(v.array(v.string())),
   designRationale: v.optional(v.string()),
   theoreticalBasis: v.optional(v.array(v.string())),
@@ -81,6 +95,8 @@ const questionFocus = v.object({
     questionLink: v.optional(v.string()),
     informationGoal: v.string(),
     judgmentSignal: v.string(),
+    coveredTargetIds: v.optional(v.array(v.string())),
+    whyThisTestsIt: v.optional(v.string()),
     responseOptions: v.optional(v.array(v.string())),
     stakes: v.optional(v.object({
       timeCost: v.optional(v.string()),
@@ -666,6 +682,8 @@ export function hydrateEventPlanResidentPlaceholders<
       questionLink?: string;
       informationGoal?: string;
       judgmentSignal?: string;
+      coveredTargetIds?: string[];
+      whyThisTestsIt?: string;
       responseOptions?: string[];
     }>;
   },
@@ -691,6 +709,9 @@ export function hydrateEventPlanResidentPlaceholders<
       judgmentSignal: plan.judgmentSignal
         ? replaceResidentPlaceholders(plan.judgmentSignal, selectedResidents)
         : plan.judgmentSignal,
+      whyThisTestsIt: plan.whyThisTestsIt
+        ? replaceResidentPlaceholders(plan.whyThisTestsIt, selectedResidents)
+        : plan.whyThisTestsIt,
       responseOptions: plan.responseOptions?.map((option) =>
         replaceResidentPlaceholders(option, selectedResidents),
       ),

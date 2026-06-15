@@ -10,10 +10,11 @@ import {
 } from './mbtiTownPlanner';
 
 describe('MBTI town event planner cleanup', () => {
-  test('requires enough planned events for the selected town duration', () => {
-    expect(requiredEventPlanCountForTarget(undefined)).toBe(6);
-    expect(requiredEventPlanCountForTarget(7)).toBe(7);
-    expect(requiredEventPlanCountForTarget(24)).toBe(20);
+  test('only requires a small startup seed because later events are dynamic', () => {
+    expect(requiredEventPlanCountForTarget(undefined)).toBe(3);
+    expect(requiredEventPlanCountForTarget(1)).toBe(1);
+    expect(requiredEventPlanCountForTarget(7)).toBe(3);
+    expect(requiredEventPlanCountForTarget(24)).toBe(3);
   });
 
   test('requests small initial event batches and only asks for missing supplements', () => {
@@ -304,6 +305,166 @@ describe('MBTI town event planner cleanup', () => {
     expect(plans?.map((plan) => plan.locationKey)).toEqual(['office', 'station', 'shop']);
   });
 
+  test('rejects event plans that do not declare coverage for required validation targets', () => {
+    const plans = cleanEventPlans(
+      [
+        {
+          title: '退休金支出边界',
+          severity: '中等',
+          locationKey: 'office',
+          scene: '社区办公室里，我和常驻居民A正在核对退休后的共同支出。',
+          trigger: '我刚说想和相亲对象长期相处，对方提出每月共同拿出三千元做生活费，但没有说明医疗和房子维修如何分担。',
+          participants: ['我', '常驻居民A'],
+          observationAxis: '经济边界',
+          questionLink: '测试退休后亲密关系是否能落到清楚的钱和责任安排。',
+          informationGoal: '看我会不会把陪伴需求和退休金边界分开说清。',
+          judgmentSignal: '能明确共同支出和个人财产边界偏稳定；只谈感情偏风险高。',
+          responseOptions: ['我先列清每月共同支出', '我要求对方说明医疗分担', '我暂缓共同账户安排'],
+          stakes: {
+            moneyCost: '退休金每月支出可能增加三千元。',
+            relationshipCost: '直接谈钱可能让对方不舒服。',
+          },
+          consequenceOptions: [
+            { userAction: '我先列清每月共同支出', relationshipDelta: '对方会更清楚我的边界。', unlocks: '后续可以继续谈同住。' },
+          ],
+        },
+      ],
+      ['经济边界', '身体照护'],
+      [
+        {
+          id: 'target_money',
+          label: '经济边界',
+          source: 'decisionDimension',
+          priority: 'must',
+          whatWouldTestIt: '测试用户是否会把退休金、共同支出和个人财产边界说清楚。',
+        },
+      ],
+    );
+
+    expect(plans).toBeUndefined();
+  });
+
+  test('requires cleaned event batches to cover every must validation target', () => {
+    const plans = cleanEventPlans(
+      [
+        {
+          title: '退休金支出边界',
+          severity: '中等',
+          locationKey: 'office',
+          scene: '社区办公室里，我和常驻居民A正在核对退休后的共同支出。',
+          trigger: '我刚说想和相亲对象长期相处，对方提出每月共同拿出三千元做生活费，但没有说明医疗和房子维修如何分担。',
+          participants: ['我', '常驻居民A'],
+          observationAxis: '经济边界',
+          questionLink: '测试退休后亲密关系是否能落到清楚的钱和责任安排。',
+          informationGoal: '看我会不会把陪伴需求和退休金边界分开说清。',
+          judgmentSignal: '能明确共同支出和个人财产边界偏稳定；只谈感情偏风险高。',
+          responseOptions: ['我先列清每月共同支出', '我要求对方说明医疗分担', '我暂缓共同账户安排'],
+          stakes: {
+            moneyCost: '退休金每月支出可能增加三千元。',
+            relationshipCost: '直接谈钱可能让对方不舒服。',
+          },
+          consequenceOptions: [
+            { userAction: '我先列清每月共同支出', relationshipDelta: '对方会更清楚我的边界。', unlocks: '后续可以继续谈同住。' },
+          ],
+          coveredTargetIds: ['target_money'],
+          whyThisTestsIt: '这个事件直接要求用户说明退休金、共同支出和个人财产边界。',
+        },
+      ],
+      ['经济边界', '身体照护'],
+      [
+        {
+          id: 'target_money',
+          label: '经济边界',
+          source: 'decisionDimension',
+          priority: 'must',
+          whatWouldTestIt: '测试用户是否会把退休金、共同支出和个人财产边界说清楚。',
+        },
+        {
+          id: 'target_care',
+          label: '身体照护',
+          source: 'riskBlindspot',
+          priority: 'must',
+          whatWouldTestIt: '测试用户是否会确认慢性病、突发照护和医疗分担责任。',
+        },
+      ],
+    );
+
+    expect(plans).toBeUndefined();
+  });
+
+  test('keeps event plans only when their coverage claims satisfy required targets', () => {
+    const plans = cleanEventPlans(
+      [
+        {
+          title: '退休金支出边界',
+          severity: '中等',
+          locationKey: 'office',
+          scene: '社区办公室里，我和常驻居民A正在核对退休后的共同支出。',
+          trigger: '我刚说想和相亲对象长期相处，对方提出每月共同拿出三千元做生活费，但没有说明医疗和房子维修如何分担。',
+          participants: ['我', '常驻居民A'],
+          observationAxis: '经济边界',
+          questionLink: '测试退休后亲密关系是否能落到清楚的钱和责任安排。',
+          informationGoal: '看我会不会把陪伴需求和退休金边界分开说清。',
+          judgmentSignal: '能明确共同支出和个人财产边界偏稳定；只谈感情偏风险高。',
+          responseOptions: ['我先列清每月共同支出', '我要求对方说明医疗分担', '我暂缓共同账户安排'],
+          stakes: {
+            moneyCost: '退休金每月支出可能增加三千元。',
+            relationshipCost: '直接谈钱可能让对方不舒服。',
+          },
+          consequenceOptions: [
+            { userAction: '我先列清每月共同支出', relationshipDelta: '对方会更清楚我的边界。', unlocks: '后续可以继续谈同住。' },
+          ],
+          coveredTargetIds: ['target_money'],
+          whyThisTestsIt: '这个事件直接要求用户说明退休金、共同支出和个人财产边界。',
+        },
+        {
+          title: '突发复诊照护安排',
+          severity: '重大',
+          locationKey: 'clinic',
+          scene: '白榆诊所里，我和常驻居民A正在确认复诊后的照护安排。',
+          trigger: '相亲对象说自己下月可能要复诊，希望我陪同并提前安排两天照护，但还没说明长期慢性病和医疗费用分担。',
+          participants: ['我', '常驻居民A'],
+          observationAxis: '身体照护',
+          questionLink: '测试退休后伴侣关系是否能承担真实健康和照护责任。',
+          informationGoal: '看我会不会确认慢性病、突发照护和医疗分担责任。',
+          judgmentSignal: '能先确认病情和责任边界偏现实；只靠热心承诺偏风险高。',
+          responseOptions: ['我先问清复诊和照护细节', '我只答应这次陪同', '我说明长期照护要另谈'],
+          stakes: {
+            timeCost: '需要提前空出两天照护时间。',
+            moneyCost: '可能涉及医疗和交通费用分担。',
+          },
+          consequenceOptions: [
+            { userAction: '我先问清复诊和照护细节', relationshipDelta: '对方会知道我愿意负责但不盲目承诺。', unlocks: '后续可以谈长期照护边界。' },
+          ],
+          coveredTargetIds: ['target_care'],
+          whyThisTestsIt: '这个事件直接测试慢性病、突发照护和医疗费用责任。',
+        },
+      ],
+      ['经济边界', '身体照护'],
+      [
+        {
+          id: 'target_money',
+          label: '经济边界',
+          source: 'decisionDimension',
+          priority: 'must',
+          whatWouldTestIt: '测试用户是否会把退休金、共同支出和个人财产边界说清楚。',
+        },
+        {
+          id: 'target_care',
+          label: '身体照护',
+          source: 'riskBlindspot',
+          priority: 'must',
+          whatWouldTestIt: '测试用户是否会确认慢性病、突发照护和医疗分担责任。',
+        },
+      ],
+    );
+
+    expect(plans?.map((plan) => plan.coveredTargetIds)).toEqual([
+      ['target_money'],
+      ['target_care'],
+    ]);
+  });
+
   test('keeps concrete life events even when the model omits cost fields', () => {
     const plans = cleanEventPlans(
       [
@@ -352,6 +513,30 @@ describe('MBTI town event planner cleanup', () => {
       '退休金支出边界',
       '回岳阳后的两地安排',
     ]);
+  });
+
+  test('keeps concrete life events when optional judgment fields are missing', () => {
+    const plans = cleanEventPlans(
+      [
+        {
+          title: '医保报销比例焦虑',
+          severity: '中等',
+          locationKey: 'clinic',
+          scene: '白榆诊所里，我和常驻居民A正在讨论回岳阳后的医保报销差异。',
+          trigger: '我听到岳阳本地医院医保报销比例和现在不同，担心以后看病费用增加，常驻居民A问我要不要先核对政策再决定住处。',
+          participants: ['我', '常驻居民A'],
+          observationAxis: '医疗财务规划',
+          informationGoal: '观察用户是否会把医疗费用纳入退休生活规划。',
+          judgmentSignal: '能否主动核对政策并调整计划。',
+        },
+      ],
+      ['医疗财务规划'],
+    );
+
+    expect(plans).toHaveLength(1);
+    expect(plans?.[0].questionLink).toContain('医疗财务规划');
+    expect(plans?.[0].responseOptions).toHaveLength(3);
+    expect(plans?.[0].consequenceOptions).toHaveLength(3);
   });
 
   test('replaces unsupported event location keys with a content-based map location', () => {
