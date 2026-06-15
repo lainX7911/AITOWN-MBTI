@@ -21,14 +21,13 @@ import {
 import { RolePreset, TestAnswer } from './types';
 import {
   compactText,
-  eventResponseOptions,
-  eventResponsePrompt,
+  eventSourceSummaryText,
   eventStatusLabel,
   eventTimelineReasonText,
   guidanceResultText,
   plannedEventSections,
   selectEventRelatedMessages,
-  shouldShowRuntimeCalibrationControls,
+  shouldShowEventCorrectionControls,
   summarizeEventRuntime,
 } from './eventProgress';
 import { settleStaleCreatingEntry } from './historyState';
@@ -1434,7 +1433,7 @@ export default function MbtiExperiment() {
                       : runStatus === 'creating'
                         ? '正在根据你的具体问题动态生成探针，可能需要数分钟；失败会自动重试，连续 3 次失败后才会终止。'
                         : runStatus === 'awaiting_user_responses'
-                          ? '请先完成启动前校准；这些回答会作为后续事件生成的前置条件。'
+                          ? '请先回答关键问题；这些回答会作为后续事件生成的前置条件。'
                         : '准备好后会在下方显示常驻小镇画布'}
                 </span>
                 {experimentState?.world && <span>{engineHealth}</span>}
@@ -1523,7 +1522,7 @@ export default function MbtiExperiment() {
             {runStatus === 'awaiting_user_responses' &&
               (activeSession?.questionFocus?.startupQuestions?.length ?? 0) === 0 && (
                 <div className="mbti-startup-missing">
-                  <p>本轮没有生成启动前校准问题。你可以重新进入，或直接启动小镇生成事件。</p>
+                  <p>本轮没有生成启动前关键问题。你可以重新进入，或直接启动小镇生成事件。</p>
                   <button onClick={() => startPreparedEvolution()} type="button">
                     直接启动小镇演化
                   </button>
@@ -2719,16 +2718,16 @@ function QuestionGuidanceRail({
         <article>
           <span>事件来源</span>
           <strong>
-            初始 {runtimeSummary.originCounts.initial} · 时间线 {runtimeSummary.originCounts.timeline} · 校准 {runtimeSummary.originCounts.calibration}
+            {eventSourceSummaryText(runtimeSummary.originCounts)}
           </strong>
-          <p>后续事件随居民生活和证据变化逐个生成，不再一次性铺满。</p>
+          <p>后续事件随居民生活和证据变化逐个生成；用户纠正只在你指出设定不合理后出现。</p>
         </article>
         <article>
           <span>时间线队列</span>
           <strong>
             已发生 {runtimeSummary.statusCounts.occurred} · 等待 {runtimeSummary.statusCounts.waitingTimeline}
           </strong>
-          <p>{runtimeSummary.statusCounts.dynamicGenerated} 个事件来自动态生成或用户校准。</p>
+          <p>{runtimeSummary.statusCounts.dynamicGenerated} 个事件来自动态生成或用户纠正后的补证据。</p>
         </article>
         <article>
           <span>下一事件</span>
@@ -2816,7 +2815,7 @@ function QuestionGuidanceRail({
       {calibrationEvents.length > 0 && (
         <section className="mbti-response-queue" id="mbti-calibration-events">
           <header>
-            <span>可选校准节点</span>
+            <span>可选纠正节点</span>
             <strong>{calibrationEvents.length}</strong>
           </header>
           <ul>
@@ -2827,7 +2826,7 @@ function QuestionGuidanceRail({
               </li>
             ))}
           </ul>
-          <p>这里只显示最需要校准的少数节点；不处理也不会阻塞小镇继续演化。</p>
+          <p>这里只显示最需要确认的少数节点；不处理也不会阻塞小镇继续演化。</p>
         </section>
       )}
       {events.length > 0 && (
@@ -2849,11 +2848,6 @@ function QuestionGuidanceRail({
               scenarioContext={`${questionFocus.observationGoal} ${questionFocus.drivingTension} ${questionFocus.resolutionCriteria} ${event.description}`}
               resolutionCriteria={questionFocus.resolutionCriteria}
               showInlineResponse={showInlineResponses}
-              manualCalibrationMode={manualCalibrationMode}
-              showCalibrationPrompt={
-                Boolean(userResponseByEvent.get(event._id)) ||
-                calibrationEvents.some((candidate) => candidate._id === event._id)
-              }
               userResponse={userResponseByEvent.get(event._id)}
               eventAssessment={assessmentByEvent.get(event._id)}
             />
@@ -2943,7 +2937,7 @@ function StartupResponseDialog({
       <section>
         <header>
           <div>
-            <span>启动前校准</span>
+            <span>关键问题</span>
             <strong>先回答这 {startupQuestions.length} 个问题，再生成本轮事件</strong>
             <p>你的回答会作为事件生成的前置约束；回答越具体，后面的情境越贴近你的真实处境。</p>
           </div>
@@ -3001,7 +2995,7 @@ function StartupResponseDialog({
         <footer>
           <span>
             {completedCount > 0
-              ? `已补充 ${completedCount}/${startupQuestions.length} 个校准回答，可以启动小镇。`
+              ? `已补充 ${completedCount}/${startupQuestions.length} 个关键回答，可以启动小镇。`
               : '未回答时也能启动，但事件只能按低假设生成，准确度会明显下降。'}
           </span>
           <button
@@ -3346,9 +3340,7 @@ function EventProgressCard({
   recordedAt,
   scenarioContext,
   resolutionCriteria,
-  showCalibrationPrompt,
   showInlineResponse,
-  manualCalibrationMode,
   userResponse,
 }: {
   eventAssessment?: EventAssessment;
@@ -3411,9 +3403,7 @@ function EventProgressCard({
   recordedAt?: number;
   scenarioContext: string;
   resolutionCriteria: string;
-  showCalibrationPrompt: boolean;
   showInlineResponse: boolean;
-  manualCalibrationMode: boolean;
   userResponse?: UserResponse;
 }) {
   const [selectedOption, setSelectedOption] = useState(userResponse?.selectedOption ?? '');
@@ -3443,8 +3433,6 @@ function EventProgressCard({
   const displayedVariable = event.testedVariable ?? planned.observationAxis ?? '未写明维度';
   const displayedQuestionLink = event.questionLink ?? planned.questionLink ?? '把原问题转成可观察的行为反应。';
   const displayedInformationGoal = event.informationGoal ?? planned.informationGoal ?? '这件事能不能推动真实互动。';
-  const responsePrompt = eventResponsePrompt(planned, event.title);
-  const responseOptions = event.responseOptions?.length ? event.responseOptions : eventResponseOptions(planned, event.title);
   const trimmedFreeText = freeText.trim();
   const trimmedCorrectionText = correctionText.trim();
   const effectiveSelectedOption =
@@ -3469,12 +3457,10 @@ function EventProgressCard({
   const primarySimulatedReaction = simulatedSelfReactions[0];
   const calibrationEventSummary = planned.trigger || compactText(event.description, 120);
   const shouldShowUserResponsePanel =
-    showInlineResponse &&
-    shouldShowRuntimeCalibrationControls({
+    shouldShowEventCorrectionControls({
       hasEventRecord,
       hasSavedUserResponse: Boolean(userResponse),
-      isCalibrationCandidate: showCalibrationPrompt,
-      manualCalibrationMode,
+      showInlineResponse,
     });
   const hasAuxiliaryEvidence = selfThoughts.length > 0 || matchedBehaviors.length > 0;
   const hasAnyEvidence = hasChatEvidence || hasAuxiliaryEvidence;
@@ -3670,11 +3656,11 @@ function EventProgressCard({
       {shouldShowUserResponsePanel && (
         <div className="mbti-calibration-popover">
           <button className="mbti-calibration-chip" type="button">
-            {userResponse ? '已校准' : '校准'}
+            {userResponse ? '已反馈' : '反馈不合理'}
           </button>
           <section className="mbti-user-response-panel" data-saved={Boolean(userResponse)}>
             <header>
-              <b>像不像你？</b>
+              <b>纠正设定</b>
               {userResponse && <span>已记录，可修改</span>}
             </header>
             <div className="mbti-calibration-context">
@@ -3686,27 +3672,27 @@ function EventProgressCard({
               <p>
                 {primarySimulatedReaction
                   ? compactText(primarySimulatedReaction.text, 120)
-                  : '还没记录到明确发言或动作，先判断这个情境像不像你的真实处境。'}
+                  : '还没记录到明确发言或动作，可以先指出这个情境哪里不符合真实前提。'}
               </p>
             </div>
             <div className="mbti-response-options" aria-label="判断模拟反应是否像我">
               {[
                 {
-                  label: '像我',
+                  label: '基本合理',
                   value: '这个模拟基本像我',
                   fit: 'fits' as const,
                   type: 'hit_real_issue' as const,
                   confidence: 6,
                 },
                 {
-                  label: '有点像',
+                  label: '补充背景',
                   value: '有点像，但需要补充现实条件',
                   fit: 'partial' as const,
                   type: 'condition_correction' as const,
                   confidence: 4,
                 },
                 {
-                  label: '不像我',
+                  label: '事实不对',
                   value: '这个情境不符合我',
                   fit: 'not_fit' as const,
                   type: 'unrealistic_event' as const,
@@ -3730,13 +3716,13 @@ function EventProgressCard({
               ))}
             </div>
             <label>
-              <span>修正一句</span>
+              <span>纠正事实或背景</span>
               <textarea
                 onChange={(inputEvent) => {
                   setFreeText(inputEvent.target.value);
                   setSubmitState('idle');
                 }}
-                placeholder="例如：我会先找家人确认，不会自己查医院。"
+                placeholder="例如：我没有孩子；这个事件不能用家庭责任来解释。"
                 value={freeText}
               />
             </label>
@@ -3776,7 +3762,7 @@ function EventProgressCard({
                   : submitState === 'error'
                   ? '保存失败'
                   : hasCalibrationAnswer
-                  ? '保存后作为后续约束'
+                  ? '保存后会影响后续事件和证据采信'
                   : '先选一项'}
               </span>
             </div>

@@ -2,11 +2,13 @@ import {
   eventResultSummary,
   eventResponseOptions,
   eventResponsePrompt,
+  eventSourceSummaryText,
   eventStatusLabel,
   eventTimelineReasonText,
   guidanceResultText,
   plannedEventSections,
   selectEventRelatedMessages,
+  shouldShowEventCorrectionControls,
   shouldShowRuntimeCalibrationControls,
   summarizeEventRuntime,
 } from './eventProgress';
@@ -19,10 +21,10 @@ describe('MBTI event progress copy', () => {
     expect(eventStatusLabel('moving')).toBe('正在进入现场');
     expect(eventStatusLabel('conversation_pending')).toBe('等待相关对话');
     expect(eventStatusLabel('triggered')).toBe('已触发，等证据');
-    expect(eventStatusLabel('pending_user_response')).toBe('可校准');
+    expect(eventStatusLabel('pending_user_response')).toBe('可反馈');
     expect(eventStatusLabel('observed')).toBe('已有证据');
-    expect(eventStatusLabel('responded')).toBe('已记录校准');
-    expect(eventStatusLabel('skipped')).toBe('已略过校准');
+    expect(eventStatusLabel('responded')).toBe('已反馈');
+    expect(eventStatusLabel('skipped')).toBe('已略过反馈');
     expect(eventStatusLabel('expired_to_stage_report')).toBe('已转阶段报告');
     expect(eventStatusLabel('resolved')).toBe('已纳入结论');
     expect(eventStatusLabel('failed')).toBe('触发失败');
@@ -221,6 +223,45 @@ describe('MBTI event progress copy', () => {
         hasSavedUserResponse: true,
       }),
     ).toBe(true);
+  });
+
+  test('shows correction controls by default once an event has a record', () => {
+    expect(
+      shouldShowEventCorrectionControls({
+        hasEventRecord: true,
+        hasSavedUserResponse: false,
+        showInlineResponse: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowEventCorrectionControls({
+        hasEventRecord: false,
+        hasSavedUserResponse: true,
+        showInlineResponse: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowEventCorrectionControls({
+        hasEventRecord: true,
+        hasSavedUserResponse: false,
+        showInlineResponse: false,
+      }),
+    ).toBe(false);
+  });
+
+  test('hides empty calibration source counts from the user-facing event source summary', () => {
+    expect(eventSourceSummaryText({
+      initial: 1,
+      timeline: 12,
+      calibration: 0,
+      other: 0,
+    })).toBe('初始 1 · 时间线 12');
+    expect(eventSourceSummaryText({
+      initial: 1,
+      timeline: 12,
+      calibration: 2,
+      other: 0,
+    })).toBe('初始 1 · 时间线 12 · 用户纠正 2');
   });
 
   test('extracts concrete plan sections for the combined plan and evidence card', () => {

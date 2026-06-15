@@ -180,6 +180,7 @@ export const ensureNextTimelineProbeNode = action({
       phase: payload.phase,
       locationKey: payload.sceneRequest.selectedLocationKey,
       residentNames: payload.residentNames,
+      residentLifeStates: payload.residentLifeStates,
     });
     let draft = fallbackDraft;
     try {
@@ -191,6 +192,7 @@ export const ensureNextTimelineProbeNode = action({
               '你是 MBTI 小镇的动态事件设计器。',
               '现在不是一次性生成整套计划，而是在小镇时间线推进到当前节点后，只生成下一件事件。',
               '事件必须来自用户原问题、当前小镇生活线和已有证据缺口；不要生成设施任务清单。',
+              '如果提供了居民既有状态，事件必须借用这些目标、压力或近况作为居民介入理由；不能凭空改写居民职业、家庭或经济状态。',
               '只输出 JSON：{"title":"短标题","concreteEvent":"具体发生的一件事","testedVariable":"这件事验证什么变量","informationGoal":"想获得什么信息","responseOptions":["三个互斥选项"],"expectedSignals":["3-4个可观察信号"]}',
             ].join('\n'),
           },
@@ -226,11 +228,33 @@ function buildTimelineProbePrompt(payload: any, fallbackDraft: ReturnType<typeof
     .map((event: any) => `- ${event.title}｜${event.testedVariable ?? '未写变量'}｜${event.status}`)
     .slice(-8)
     .join('\n') || '暂无已发生提问事件。';
+  const residentLifeStates = (payload.residentLifeStates ?? [])
+    .map((resident: any) => {
+      const scores = [
+        typeof resident.economy === 'number' ? `经济${Math.round(resident.economy)}` : '',
+        typeof resident.career === 'number' ? `事业${Math.round(resident.career)}` : '',
+        typeof resident.social === 'number' ? `社交${Math.round(resident.social)}` : '',
+        typeof resident.health === 'number' ? `健康${Math.round(resident.health)}` : '',
+        typeof resident.stress === 'number' ? `压力${Math.round(resident.stress)}` : '',
+      ].filter(Boolean).join('/');
+      return [
+        `${resident.name}｜${resident.role}`,
+        resident.longTermGoal ? `长期目标：${resident.longTermGoal}` : '',
+        resident.currentPressure ? `当前压力：${resident.currentPressure}` : '',
+        resident.currentIntent ? `短期意图：${resident.currentIntent}` : '',
+        resident.lastImpactReason ? `最近变化：${resident.lastImpactReason}` : '',
+        scores,
+      ].filter(Boolean).join('；');
+    })
+    .join('\n') || '暂无居民目标/压力状态。';
   return [
     `用户问题：${payload.experiment.question}`,
     `当前小镇时间：第 ${payload.townDay} 天，${payload.phase}`,
     `地点：${payload.sceneRequest.selectedLocationKey ?? fallbackDraft.locationKey ?? 'town'}`,
     `可参与居民：${(payload.residentNames ?? []).join('、') || '当前场景居民'}`,
+    '',
+    '居民既有目标/压力/状态：',
+    residentLifeStates,
     '',
     `本轮观察目标：${payload.experiment.questionFocus?.observationGoal ?? '验证用户问题里的真实取舍'}`,
     `关键未知：${payload.experiment.questionFocus?.decisionStructure?.unknowns?.join('；') ?? '未写明'}`,

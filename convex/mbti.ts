@@ -833,6 +833,18 @@ export function buildTimelineGeneratedProbeDraft(args: {
   phase: TownTimelinePhase;
   locationKey?: string;
   residentNames?: string[];
+  residentLifeStates?: Array<{
+    name: string;
+    role: string;
+    longTermGoal?: string;
+    currentPressure?: string;
+    economy?: number;
+    career?: number;
+    social?: number;
+    health?: number;
+    stress?: number;
+    lastImpactReason?: string;
+  }>;
 }) {
   const existingVariables = new Set(args.existingTestedVariables ?? []);
   const focus = args.questionFocus;
@@ -848,6 +860,7 @@ export function buildTimelineGeneratedProbeDraft(args: {
   const scheduledDay = Math.max(schedule.scheduledDay, args.townDay + 2);
   const scheduledPhase = schedule.scheduledPhase;
   const residentNames = (args.residentNames ?? []).filter(Boolean).slice(0, 2);
+  const residentLifeContext = compactResidentLifeContext(args.residentLifeStates ?? [], residentNames);
   const involvedRoles = ['self', ...residentNames];
   const locationLabel = args.locationKey ?? 'town';
   const title = `时间线追问：${compactForPrompt(targetVariable, 18)}`;
@@ -871,6 +884,7 @@ export function buildTimelineGeneratedProbeDraft(args: {
       `事件强度：中等`,
       `具体事情：居民把“${targetVariable}”转成一个今天必须处理的选择，要求我说明是否仍坚持原判断。`,
       `参与者：${involvedRoles.map(displayParticipantName).join('、')}`,
+      residentLifeContext ? `居民既有状态：${residentLifeContext}` : '',
       `观察维度：${targetVariable}`,
       `问题关联：${focus?.observationGoal ?? args.question}`,
       `想获得的信息：${adaptiveReason}`,
@@ -1046,7 +1060,7 @@ export function answerPositionReadiness(
 export function userSideEvidenceEventIds(args: {
   eventEvidence?: Array<{ kind: string; mbtiEventId?: unknown; participantIds?: unknown[] }>;
   behaviorEvents?: Array<{ mbtiEventId?: unknown; playerId?: unknown }>;
-  userResponses?: Array<{ mbtiEventId?: unknown; responseStatus?: string }>;
+  userResponses?: Array<{ mbtiEventId?: unknown; responseStatus?: string; feedbackType?: string }>;
   playerNameById?: Record<string, string>;
 }) {
   const selfPlayerIds = new Set(
@@ -1056,7 +1070,11 @@ export function userSideEvidenceEventIds(args: {
   );
   const ids = new Set<string>();
   for (const response of args.userResponses ?? []) {
-    if (response.responseStatus === 'responded' && response.mbtiEventId) {
+    const feedbackCountsAsEvidence =
+      !response.feedbackType ||
+      response.feedbackType === 'user_reaction' ||
+      response.feedbackType === 'hit_real_issue';
+    if (response.responseStatus === 'responded' && response.mbtiEventId && feedbackCountsAsEvidence) {
       ids.add(String(response.mbtiEventId));
     }
   }
@@ -1564,6 +1582,23 @@ export const collectTimelineProbeGenerationPayload = internalQuery({
       .map((key) => residents.find((resident) => resident.key === key)?.name)
       .filter((name): name is string => Boolean(name))
       .slice(0, 2);
+    const selectedResidentKeys = new Set(sceneRequest.selectedResidentKeys);
+    const residentLifeStates = residents
+      .filter((resident) => selectedResidentKeys.has(resident.key))
+      .slice(0, 4)
+      .map((resident) => ({
+        name: resident.name,
+        role: resident.role,
+        longTermGoal: resident.lifeProfile?.longTermGoal,
+        currentPressure: resident.lifeProfile?.currentPressure,
+        economy: resident.lifeProfile?.economy,
+        career: resident.lifeProfile?.career,
+        social: resident.lifeProfile?.social,
+        health: resident.lifeProfile?.health,
+        stress: resident.lifeProfile?.stress,
+        lastImpactReason: resident.lifeProfile?.lastImpactReason,
+        currentIntent: resident.autonomyPlan?.intent,
+      }));
     const timelineEvents = experiment.townId
       ? await ctx.db
           .query('mbtiTownTimelineEvents')
@@ -1577,6 +1612,7 @@ export const collectTimelineProbeGenerationPayload = internalQuery({
       sceneRequest,
       events,
       residentNames,
+      residentLifeStates,
       timelineEvents: timelineEvents.map((event) => ({
         townDay: event.townDay,
         phase: event.phase,
@@ -5511,6 +5547,44 @@ function sceneRoleLinesForEvent(involvedRoles: string[], residents: TownResident
       return `${resident.name}是${role.relationToUser}，介入动机是${compactForPrompt(role.personalStake, 72)}，只能${compactForPrompt(role.allowedIntervention, 72)}`;
     })
     .slice(0, 3);
+}
+
+function compactResidentLifeContext(
+  residentLifeStates: Array<{
+    name: string;
+    role: string;
+    longTermGoal?: string;
+    currentPressure?: string;
+    economy?: number;
+    career?: number;
+    social?: number;
+    health?: number;
+    stress?: number;
+    lastImpactReason?: string;
+  }>,
+  preferredNames: string[] = [],
+) {
+  const preferred = new Set(preferredNames);
+  return residentLifeStates
+    .filter((state) => !preferred.size || preferred.has(state.name))
+    .slice(0, 2)
+    .map((state) => {
+      const scoreLine = [
+        typeof state.economy === 'number' ? `经济${Math.round(state.economy)}` : '',
+        typeof state.career === 'number' ? `事业${Math.round(state.career)}` : '',
+        typeof state.social === 'number' ? `社交${Math.round(state.social)}` : '',
+        typeof state.health === 'number' ? `健康${Math.round(state.health)}` : '',
+        typeof state.stress === 'number' ? `压力${Math.round(state.stress)}` : '',
+      ].filter(Boolean).join('/');
+      return [
+        `${state.name}(${state.role})`,
+        state.longTermGoal ? `目标:${compactForPrompt(state.longTermGoal, 42)}` : '',
+        state.currentPressure ? `压力:${compactForPrompt(state.currentPressure, 42)}` : '',
+        scoreLine,
+        state.lastImpactReason ? `近况:${compactForPrompt(state.lastImpactReason, 34)}` : '',
+      ].filter(Boolean).join('，');
+    })
+    .join('；');
 }
 
 function inferEventStakes(trigger: string, testedVariable: string): EventStakesInput {

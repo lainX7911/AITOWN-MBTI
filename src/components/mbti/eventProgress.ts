@@ -39,13 +39,13 @@ export function eventStatusLabel(status: EventProgressStatus) {
     case 'triggered':
       return '已触发，等证据';
     case 'pending_user_response':
-      return '可校准';
+      return '可反馈';
     case 'observed':
       return '已有证据';
     case 'responded':
-      return '已记录校准';
+      return '已反馈';
     case 'skipped':
-      return '已略过校准';
+      return '已略过反馈';
     case 'expired_to_stage_report':
       return '已转阶段报告';
     case 'resolved':
@@ -169,6 +169,40 @@ export function shouldShowRuntimeCalibrationControls({
     return true;
   }
   return isCalibrationCandidate && hasEventRecord;
+}
+
+export function shouldShowEventCorrectionControls({
+  hasEventRecord,
+  hasSavedUserResponse,
+  showInlineResponse,
+}: {
+  hasEventRecord: boolean;
+  hasSavedUserResponse: boolean;
+  showInlineResponse: boolean;
+}) {
+  if (!showInlineResponse) {
+    return false;
+  }
+  return hasEventRecord || hasSavedUserResponse;
+}
+
+export function eventSourceSummaryText(originCounts: {
+  initial: number;
+  timeline: number;
+  calibration: number;
+  other?: number;
+}) {
+  const parts = [
+    `初始 ${originCounts.initial}`,
+    `时间线 ${originCounts.timeline}`,
+  ];
+  if (originCounts.calibration > 0) {
+    parts.push(`用户纠正 ${originCounts.calibration}`);
+  }
+  if ((originCounts.other ?? 0) > 0) {
+    parts.push(`其他 ${originCounts.other}`);
+  }
+  return parts.join(' · ');
 }
 
 export function compactText(text: string, maxLength: number) {

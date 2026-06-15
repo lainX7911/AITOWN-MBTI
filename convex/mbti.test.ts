@@ -175,6 +175,40 @@ describe('MBTI observation duration', () => {
     expect(draft.description).toContain('office');
   });
 
+  test('grounds timeline-generated probes in resident life state when available', () => {
+    const draft = buildTimelineGeneratedProbeDraft({
+      question: '我退休回老家可能遇到什么问题？',
+      questionFocus: {
+        analysisDimensions: ['社交适应', '财务边界'],
+      } as any,
+      existingEventCount: 3,
+      townDay: 12,
+      phase: 'morning',
+      locationKey: 'clinic',
+      residentNames: ['周眠'],
+      residentLifeStates: [
+        {
+          name: '周眠',
+          role: '夜班护士',
+          longTermGoal: '在照顾他人的工作里维持专业边界和自己的生活秩序',
+          currentPressure: '照护和责任不断占用精力，担心自己没有恢复时间',
+          economy: 48,
+          career: 56,
+          social: 46,
+          health: 46,
+          stress: 64,
+          lastImpactReason: '关系旧分歧浮现，社交稳定感下降，压力上升',
+        },
+      ],
+    });
+
+    expect(draft.description).toContain('居民既有状态');
+    expect(draft.description).toContain('周眠');
+    expect(draft.description).toContain('夜班护士');
+    expect(draft.description).toContain('照护和责任');
+    expect(draft.description).toContain('压力64');
+  });
+
   test('keeps persistent town worlds running after the question run completes', () => {
     expect(completionRuntimePolicyForExperiment({ townId: 'town-1' })).toEqual({
       stopEngine: false,
@@ -279,6 +313,30 @@ describe('MBTI observation duration', () => {
     });
 
     expect([...ids].sort()).toEqual(['event-1', 'event-2', 'event-3']);
+  });
+
+  test('does not count event correction feedback as strong answer evidence for that event', () => {
+    const ids = userSideEvidenceEventIds({
+      userResponses: [
+        {
+          mbtiEventId: 'event-wrong-fact',
+          responseStatus: 'responded',
+          feedbackType: 'unrealistic_event',
+        },
+        {
+          mbtiEventId: 'event-condition-correction',
+          responseStatus: 'responded',
+          feedbackType: 'condition_correction',
+        },
+        {
+          mbtiEventId: 'event-real-reaction',
+          responseStatus: 'responded',
+          feedbackType: 'hit_real_issue',
+        },
+      ],
+    });
+
+    expect([...ids]).toEqual(['event-real-reaction']);
   });
 
   test('does not finalize while a generated timeline event is still waiting', () => {
