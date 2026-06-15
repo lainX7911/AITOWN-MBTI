@@ -4,6 +4,8 @@ import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ConvexHttpClient } from 'convex/browser';
+import { api } from '../convex/_generated/api.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
@@ -71,16 +73,18 @@ async function main() {
   });
   if (!scene?.questionFocus?.eventPlans?.length) {
     scene = await hydrateSceneFromRecentRequests({
-      adminKey: config.adminKey,
+      question,
       rawPath: join(outDir, '03-scene.raw.log'),
       url,
     }) ?? scene;
   }
 
   const elapsedMs = Date.now() - startedAt;
+  const requiredSeedEventCount = requiredSeedEventsForTarget(targetEventCount);
   const summary = summarizeScene({
     question,
     targetEventCount,
+    requiredSeedEventCount,
     userEntryMode,
     requiredStartupQuestionCount,
     startupQuestions,
@@ -91,8 +95,8 @@ async function main() {
   await writeJson(join(outDir, '04-scene.json'), scene);
   await writeJson(join(outDir, '05-summary.json'), summary);
 
-  if (summary.eventCount < targetEventCount) {
-    throw new Error(`Expected at least ${targetEventCount} events, got ${summary.eventCount}`);
+  if (summary.eventCount < requiredSeedEventCount) {
+    throw new Error(`Expected at least ${requiredSeedEventCount} seed events, got ${summary.eventCount}`);
   }
   if (summary.duplicateTitles.length > 0) {
     throw new Error(`Duplicate event titles: ${summary.duplicateTitles.join(', ')}`);
@@ -106,6 +110,7 @@ async function main() {
     outDir,
     elapsedMs,
     eventCount: summary.eventCount,
+    requiredSeedEventCount,
     startupAnswerCount: startupAnswers.length,
     duplicateTitles: summary.duplicateTitles,
     placeholderHits: summary.placeholderHits,
@@ -246,23 +251,16 @@ function isStartupQuestionResult(value) {
   );
 }
 
-async function hydrateSceneFromRecentRequests({ adminKey, rawPath, url }) {
+async function hydrateSceneFromRecentRequests({ question, rawPath, url }) {
   const raw = await readFile(rawPath, 'utf8');
   const sceneRequestId = extractSceneRequestId(raw);
-  if (!sceneRequestId) {
-    return null;
+  const client = new ConvexHttpClient(url);
+  const recent = await client.query(api.mbtiTown.listSceneRequests, { limit: 50 });
+  await writeJson(rawPath.replace(/03-scene\.raw\.log$/, '03b-scene-requests.json'), recent);
+  if (sceneRequestId) {
+    return recent.find((item) => item._id === sceneRequestId || item.sceneRequestId === sceneRequestId) ?? null;
   }
-  const recent = await runConvexFunction({
-    functionName: 'mbtiTown:listSceneRequests',
-    args: { limit: 50 },
-    url,
-    adminKey,
-    rawPath: rawPath.replace(/03-scene\.raw\.log$/, '03b-scene-requests.raw.log'),
-  });
-  if (!Array.isArray(recent)) {
-    return null;
-  }
-  return recent.find((item) => item._id === sceneRequestId || item.sceneRequestId === sceneRequestId) ?? null;
+  return recent.find((item) => item.questionFocus?.coreQuestion === question) ?? null;
 }
 
 function extractSceneRequestId(text) {
@@ -369,6 +367,7 @@ function assertAnswersMatchQuestions(startupQuestions, startupAnswers) {
 function summarizeScene({
   question,
   targetEventCount,
+  requiredSeedEventCount,
   userEntryMode,
   requiredStartupQuestionCount,
   startupQuestions,
@@ -394,6 +393,7 @@ function summarizeScene({
   return {
     question,
     targetEventCount,
+    requiredSeedEventCount,
     userEntryMode,
     requiredStartupQuestionCount,
     startupQuestionCount: startupQuestions.length,
@@ -416,6 +416,14 @@ function summarizeScene({
       judgmentSignal: event.judgmentSignal,
     })),
   };
+}
+
+function requiredSeedEventsForTarget(targetEventCount) {
+  const target = Math.max(1, Math.floor(targetEventCount || 6));
+  if (target <= 1) {
+    return 1;
+  }
+  return Math.min(3, target);
 }
 
 function findDuplicates(values) {
