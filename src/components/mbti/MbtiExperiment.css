@@ -1077,6 +1077,14 @@
   line-height: 1.35;
 }
 
+.mbti-creating-overlay p {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
 .mbti-joining-progress {
   position: relative;
   height: 6px;
@@ -1127,6 +1135,22 @@
   font-style: normal;
   font-weight: 700;
   line-height: 1.35;
+}
+
+.mbti-creating-cancel {
+  justify-self: end;
+  border: 1px solid #94a3b8;
+  background: #fff;
+  padding: 8px 12px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.mbti-creating-cancel:hover,
+.mbti-creating-cancel:focus-visible {
+  border-color: #b91c1c;
+  color: #b91c1c;
 }
 
 @keyframes mbti-joining-scan {

@@ -274,9 +274,9 @@ const historyResetKey = 'mbti-town-history-reset:2026-06-10-room';
 const stateCompatibilityKey = 'mbti-town-state-compat:2026-06-12-experiment-id-v2';
 const convexIdPattern = /^[a-z0-9]+$/;
 const sliderScaleMarks = [0, 25, 50, 75, 100];
-const creatingSessionTimeoutMs = 11 * 60 * 1000;
+const creatingSessionTimeoutMs = 4 * 60 * 1000;
 const creatingTimeoutMessage =
-  '加入常驻小镇等待超时。系统已经按规则自动等待长生成和最多 3 次重试，本轮已终止；请检查 Convex 后端和本地 LLM/Ollama 是否可用，或调整问题后再进入。';
+  '加入常驻小镇等待超时。本轮已终止；请检查 Convex 后端和本地 LLM/Ollama 是否可用，或调整问题后再进入。';
 const customDurationMinHours = 2;
 const customDurationMaxHours = 8;
 const mbtiTestModes: Array<{
@@ -648,6 +648,7 @@ export default function MbtiExperiment() {
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [timelineAdvanceState, setTimelineAdvanceState] = useState<'idle' | 'running' | 'error'>('idle');
   const [idleResolutionState, setIdleResolutionState] = useState<'idle' | 'running' | 'error'>('idle');
+  const canceledCreationIdsRef = useRef(new Set<string>());
   const finalizeAttemptRef = useRef<string | null>(null);
   const idleResolveAttemptRef = useRef<string | null>(null);
   const createExperiment = useMutation(api.mbti.createExperiment);
@@ -1023,11 +1024,15 @@ export default function MbtiExperiment() {
     setLiveExperimentId(undefined);
     setHistory((current) => [draftSession, ...current].slice(0, 12));
     setActiveStep('observe');
+    canceledCreationIdsRef.current.delete(draftSession.id);
     try {
       const planning = await planStartupQuestions({
         question: nextQuestion,
         targetEventCount: observationEventCount(experimentScale, customDurationHours),
       }) as { plannedFocus: QuestionFocus; requiredStartupQuestionCount: number };
+      if (canceledCreationIdsRef.current.has(draftSession.id)) {
+        return;
+      }
       const waitingSession: HistoryEntry = {
         ...draftSession,
         status: 'awaiting_user_responses',
@@ -1040,6 +1045,9 @@ export default function MbtiExperiment() {
         current.map((entry) => (entry.id === draftSession.id ? waitingSession : entry)),
       );
     } catch (error) {
+      if (canceledCreationIdsRef.current.has(draftSession.id)) {
+        return;
+      }
       const errorMessage = error instanceof Error ? error.message : '加入常驻小镇失败';
       const failedSession: HistoryEntry = {
         ...draftSession,
@@ -1061,6 +1069,8 @@ export default function MbtiExperiment() {
     if (!activeSession || activeSession.status !== 'awaiting_user_responses' || !activeSession.questionFocus) {
       return;
     }
+    const sessionId = activeSession.id;
+    canceledCreationIdsRef.current.delete(sessionId);
     try {
       setRunStatus('creating');
       const effectiveRolePresets = normalizeRolePresets(activeSession.rolePresets);
@@ -1073,6 +1083,9 @@ export default function MbtiExperiment() {
         plannedFocus: activeSession.questionFocus as never,
         startupAnswers: startupAnswers as never,
       });
+      if (canceledCreationIdsRef.current.has(sessionId)) {
+        return;
+      }
       const result = await createExperiment({
         question: activeSession.question,
         profile,
@@ -1091,6 +1104,9 @@ export default function MbtiExperiment() {
         },
       });
       await startExperimentEvolution({ experimentId: result.experimentId as never });
+      if (canceledCreationIdsRef.current.has(sessionId)) {
+        return;
+      }
       const runningSession: HistoryEntry = {
         ...activeSession,
         status: 'running',
@@ -1117,13 +1133,39 @@ export default function MbtiExperiment() {
       setActiveSession(runningSession);
       setLiveExperimentId(result.experimentId);
       setHistory((current) =>
-        current.map((entry) => (entry.id === activeSession.id ? runningSession : entry)),
+        current.map((entry) => (entry.id === sessionId ? runningSession : entry)),
       );
     } catch (error) {
+      if (canceledCreationIdsRef.current.has(sessionId)) {
+        return;
+      }
       console.error('Failed to start MBTI evolution', error);
-      setRunStatus('awaiting_user_responses');
+      const errorMessage = error instanceof Error ? error.message : '正式启动小镇演化失败，请稍后重试。';
+      const failedSession: HistoryEntry = {
+        ...activeSession,
+        status: 'failed',
+        error: errorMessage,
+      };
+      setRunStatus('failed');
+      setActiveSession(failedSession);
+      setLiveExperimentId(undefined);
+      setHistory((current) =>
+        current.map((entry) => (entry.id === sessionId ? failedSession : entry)),
+      );
       window.alert(error instanceof Error ? error.message : '正式启动小镇演化失败，请稍后重试。');
     }
+  }
+
+  function cancelActiveCreation() {
+    if (!activeSession || runStatus !== 'creating') {
+      return;
+    }
+    canceledCreationIdsRef.current.add(activeSession.id);
+    setHistory((current) => current.filter((entry) => entry.id !== activeSession.id));
+    setActiveSession(null);
+    setLiveExperimentId(undefined);
+    setRunStartedAt(null);
+    setRunStatus('draft');
   }
 
   function refreshInferredRoles() {
@@ -1501,6 +1543,7 @@ export default function MbtiExperiment() {
                 <div>
                   <span>正在加入常驻小镇</span>
                   <strong>请稍等，正在为这次问题生成专属情境</strong>
+                  <p>如果本地模型服务无响应，系统会在约 4 分钟内自动失败；你也可以取消本次创建后重新进入。</p>
                   <div className="mbti-joining-progress" aria-hidden="true">
                     <i />
                   </div>
@@ -1512,6 +1555,9 @@ export default function MbtiExperiment() {
                       </li>
                     ))}
                   </ol>
+                  <button className="mbti-creating-cancel" onClick={cancelActiveCreation} type="button">
+                    取消本次创建并移除历史
+                  </button>
                 </div>
               </div>
             )}

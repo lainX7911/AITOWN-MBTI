@@ -10,6 +10,11 @@ import { makeFunctionReference } from 'convex/server';
 import { action } from './_generated/server';
 import { chatCompletion } from './util/llm';
 
+const plannerStartupTimeoutMs = 60_000;
+const plannerEventTimeoutMs = 75_000;
+const plannerStartupMaxAttempts = 2;
+const plannerEventMaxAttempts = 2;
+
 const userEntryMode = v.union(
   v.literal('solo'),
   v.literal('with_partner'),
@@ -323,7 +328,7 @@ export const planStartupQuestions = action({
     const planningResult = await planQuestionSkeletonWithRetries(
       args.question,
       requiredStartupQuestionCount,
-      3,
+      plannerStartupMaxAttempts,
     );
     const plannedFocus = planningResult.plannedFocus;
     if (
@@ -334,7 +339,7 @@ export const planStartupQuestions = action({
       const issueText = planningResult.issues.length > 0
         ? `失败原因：${planningResult.issues.join(' | ')}。`
         : '';
-      throw new Error(`启动前关键问题连续生成 3 次仍失败：本轮需要 ${requiredStartupQuestionCount} 个合格关键问题，不会使用兜底模板。${issueText}请检查本地模型服务是否稳定，或调整问题后再进入。`);
+      throw new Error(`启动前关键问题生成失败：本轮需要 ${requiredStartupQuestionCount} 个合格关键问题，不会使用兜底模板。${issueText}请检查本地模型服务是否稳定，或调整问题后再进入。`);
     }
     return {
       plannedFocus,
@@ -357,7 +362,7 @@ export const planAndCreateSceneRequest = action({
     const requiredEventPlanCount = requiredEventPlanCountForTarget(args.targetEventCount);
     const skeleton = args.plannedFocus?.startupQuestions?.length
       ? stripEventPlans(args.plannedFocus)
-      : (await planQuestionSkeletonWithRetries(args.question, requiredStartupQuestionCount, 3)).plannedFocus;
+      : (await planQuestionSkeletonWithRetries(args.question, requiredStartupQuestionCount, plannerStartupMaxAttempts)).plannedFocus;
     if (
       !skeleton ||
       !skeleton.startupQuestions ||
@@ -386,7 +391,7 @@ export const planAndCreateSceneRequest = action({
       targetSkeleton,
       answers,
       requiredEventPlanCount,
-      3,
+      plannerEventMaxAttempts,
       runVariant,
       authenticityFeedback,
     );
@@ -405,7 +410,7 @@ export const planAndCreateSceneRequest = action({
       const issueText = planningResult.issues.length > 0
         ? `失败原因：${planningResult.issues.join(' | ')}。`
         : '';
-      throw new Error(`基于启动前回应生成情境探针连续 3 次仍失败：启动阶段只需要 ${requiredEventPlanCount} 个合格种子事件，后续事件会随时间线和证据动态生成，不会使用兜底模板。${issueText}请检查本地模型服务是否稳定，或调整问题后再进入。`);
+      throw new Error(`基于启动前回应生成情境探针失败：启动阶段只需要 ${requiredEventPlanCount} 个合格种子事件，后续事件会随时间线和证据动态生成，不会使用兜底模板。${issueText}请检查本地模型服务是否稳定，或调整问题后再进入。`);
     }
     return await ctx.runMutation(makeFunctionReference<'mutation'>('mbtiTown:createSceneRequest'), {
       townId: args.townId,
@@ -641,7 +646,7 @@ async function planQuestionSkeleton(
       },
     ],
     temperature: 0.2,
-    timeoutMs: 180_000,
+    timeoutMs: plannerStartupTimeoutMs,
   });
   const parsed = parsePlannerJson(content);
   if (!parsed) {
@@ -840,7 +845,7 @@ async function planQuestionEvents(
         },
       ],
       temperature: 0.25,
-      timeoutMs: 180_000,
+      timeoutMs: plannerEventTimeoutMs,
     });
   const parsed = parsePlannerJson(content);
   if (!parsed) {

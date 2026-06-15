@@ -106,7 +106,7 @@ describe('MBTI history status', () => {
       rolePresets: never[];
       scaleLabel: string;
     } = {
-      createdAt: 1_000_000 - 12 * 60 * 1000,
+      createdAt: 1_000_000 - 5 * 60 * 1000,
       id: 'stale',
       profileCode: 'INFJ',
       question: '测试问题',
@@ -117,7 +117,7 @@ describe('MBTI history status', () => {
     const entry = settleStaleCreatingEntry(
       staleEntry,
       1_000_000,
-      11 * 60 * 1000,
+      4 * 60 * 1000,
       '加入常驻小镇等待超时。',
     );
 
