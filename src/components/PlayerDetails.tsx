@@ -13,6 +13,20 @@ import { PlayerDescription } from '../../convex/aiTown/playerDescription';
 
 type DetailTab = 'events' | 'profile' | 'thoughts' | 'chat';
 
+export type ResidentLifeDetail = {
+  residentName: string;
+  role: string;
+  longTermGoal: string;
+  currentPressure: string;
+  economy: number;
+  career: number;
+  social: number;
+  health: number;
+  stress: number;
+  lastImpactReason?: string;
+  currentIntent?: string;
+};
+
 const detailTabs: { id: DetailTab; label: string }[] = [
   { id: 'events', label: '事件记录' },
   { id: 'profile', label: '居民简介' },
@@ -25,6 +39,7 @@ export default function PlayerDetails({
   engineId,
   game,
   playerId,
+  residentLifeDetails,
   setSelectedElement,
   scrollViewRef,
 }: {
@@ -32,6 +47,7 @@ export default function PlayerDetails({
   engineId: Id<'engines'>;
   game: ServerGame;
   playerId?: GameId<'players'>;
+  residentLifeDetails?: ResidentLifeDetail[];
   setSelectedElement: SelectElement;
   scrollViewRef: React.RefObject<HTMLDivElement>;
 }) {
@@ -72,6 +88,9 @@ export default function PlayerDetails({
   const hasMoreConversations = (previousConversations?.length ?? 0) > conversationLimit;
 
   const playerDescription = playerId && game.playerDescriptions.get(playerId);
+  const residentLifeDetail = playerDescription
+    ? residentLifeDetails?.find((detail) => detail.residentName === playerDescription.name)
+    : undefined;
   const selectablePlayers = players
     .map((p) => ({ player: p, description: game.playerDescriptions.get(p.id) }))
     .filter(
@@ -273,17 +292,20 @@ export default function PlayerDetails({
       </div>
 
       {activeTab === 'profile' && (
-        <div className="desc my-5">
-          <p className="leading-snug -m-4 bg-brown-700 text-lg">
-            {playerDescription?.description || (isHumanMe ? <i>这是你。</i> : null)}
-            {!isMe && inConversationWithMe && (
-              <>
-                <br />
-                <br />(<i>正在和你对话。</i>)
-              </>
-            )}
-          </p>
-        </div>
+        <>
+          <div className="desc my-5">
+            <p className="leading-snug -m-4 bg-brown-700 text-lg">
+              {playerDescription?.description || (isHumanMe ? <i>这是你。</i> : null)}
+              {!isMe && inConversationWithMe && (
+                <>
+                  <br />
+                  <br />(<i>正在和你对话。</i>)
+                </>
+              )}
+            </p>
+          </div>
+          {residentLifeDetail && <ResidentLifeCard detail={residentLifeDetail} />}
+        </>
       )}
 
       {activeTab === 'events' && (
@@ -380,6 +402,69 @@ export default function PlayerDetails({
         </div>
       )}
     </>
+  );
+}
+
+function ResidentLifeCard({ detail }: { detail: ResidentLifeDetail }) {
+  return (
+    <section className="mt-4 border-4 border-brown-900 bg-white p-4 text-brown-900 shadow-solid">
+      <header className="mb-3">
+        <span className="block text-base font-black text-teal-700">个人状态</span>
+        <strong className="block text-xl leading-tight">{detail.residentName} · {detail.role}</strong>
+      </header>
+      <div className="grid gap-3 text-base leading-snug">
+        <div>
+          <b className="block text-teal-800">长期目标</b>
+          <p>{detail.longTermGoal}</p>
+        </div>
+        <div>
+          <b className="block text-amber-800">当前压力</b>
+          <p>{detail.currentPressure}</p>
+        </div>
+        {detail.currentIntent && (
+          <div>
+            <b className="block text-slate-700">短期意图</b>
+            <p>{detail.currentIntent}</p>
+          </div>
+        )}
+        <div className="grid gap-2">
+          <ResidentLifeMeter label="经济" value={detail.economy} />
+          <ResidentLifeMeter label="事业" value={detail.career} />
+          <ResidentLifeMeter label="社交" value={detail.social} />
+          <ResidentLifeMeter label="健康" value={detail.health} />
+          <ResidentLifeMeter label="压力" value={detail.stress} stress />
+        </div>
+        {detail.lastImpactReason && (
+          <p className="border-t border-brown-200 pt-2 text-sm font-bold text-brown-700">
+            最近变化：{detail.lastImpactReason}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ResidentLifeMeter({
+  label,
+  stress = false,
+  value,
+}: {
+  label: string;
+  stress?: boolean;
+  value: number;
+}) {
+  const safeValue = Math.max(0, Math.min(100, Math.round(value)));
+  return (
+    <div className="grid grid-cols-[42px_1fr_32px] items-center gap-2 text-sm font-black">
+      <span>{label}</span>
+      <span className="block h-2 overflow-hidden border border-brown-300 bg-brown-100">
+        <i
+          className={`block h-full ${stress ? 'bg-amber-700' : 'bg-teal-700'}`}
+          style={{ width: `${safeValue}%` }}
+        />
+      </span>
+      <em className="not-italic text-right">{safeValue}</em>
+    </div>
   );
 }
 

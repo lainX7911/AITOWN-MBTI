@@ -7,7 +7,7 @@ import { api } from '../../../convex/_generated/api';
 import { Id } from '../../../convex/_generated/dataModel';
 import { GameId } from '../../../convex/aiTown/ids';
 import PixiGame from '../PixiGame';
-import PlayerDetails from '../PlayerDetails';
+import PlayerDetails, { ResidentLifeDetail } from '../PlayerDetails';
 import { useServerGame } from '../../hooks/serverGame';
 import { useHistoricalTime } from '../../hooks/useHistoricalTime';
 import { useWorldHeartbeat } from '../../hooks/useWorldHeartbeat';
@@ -1542,6 +1542,7 @@ export default function MbtiExperiment() {
                     .map((event) => event.locationKey)
                     .filter((key): key is string => Boolean(key))}
                   engineId={experimentState.experiment.engineId}
+                  residentLifeDetails={defaultTown?.observation?.residentDevelopment}
                   timelineNode={liveTimelineNode}
                   worldId={experimentState.experiment.worldId}
                 />
@@ -2232,12 +2233,14 @@ function ExperimentTownFrame({
   activeLocationKey,
   activeLocationKeys,
   engineId,
+  residentLifeDetails,
   timelineNode,
   worldId,
 }: {
   activeLocationKey?: string;
   activeLocationKeys?: string[];
   engineId: Id<'engines'>;
+  residentLifeDetails?: ResidentLifeDetail[];
   timelineNode?: TownObservationSummary['timeline'][number];
   worldId: Id<'worlds'>;
 }) {
@@ -2329,6 +2332,7 @@ function ExperimentTownFrame({
             engineId={engineId}
             game={game}
             playerId={selectedElement?.id}
+            residentLifeDetails={residentLifeDetails}
             scrollViewRef={scrollViewRef}
             setSelectedElement={setSelectedElement}
             worldId={worldId}
@@ -3491,7 +3495,6 @@ function EventProgressCard({
   const evidencePreviewItems = correctionEvidencePreviewItems({
     messages: selfMessages,
     behaviors: matchedBehaviors.map((behavior) => behavior.text),
-    thoughts: selfThoughts,
     maxItems: 4,
   });
   const calibrationEventSummary = planned.trigger || compactText(event.description, 120);
@@ -3721,7 +3724,7 @@ function EventProgressCard({
                 <p>还没记录到明确聊天或动作，可以先指出这个情境哪里不符合真实前提。</p>
               )}
               {!hasChatEvidence && evidencePreviewItems.length > 0 && (
-                <em>本事件暂未匹配到聊天，只看到动作或内心证据。</em>
+                <em>本事件暂未匹配到聊天，只看到动作证据。</em>
               )}
             </div>
             <div className="mbti-response-options" aria-label="判断模拟反应是否像我">

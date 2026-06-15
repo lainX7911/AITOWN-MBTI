@@ -269,7 +269,6 @@ describe('MBTI event progress copy', () => {
     const items = correctionEvidencePreviewItems({
       messages: ['我想先问清楚这里有没有误会。'],
       behaviors: ['放下茶杯起身告辞。'],
-      thoughts: ['我觉得这个场景有点不贴合。'],
       maxItems: 3,
     });
 
