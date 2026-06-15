@@ -951,6 +951,7 @@ export function finalReportReadiness(
   socialEvents: Array<{ mbtiEventId?: unknown }>,
   userResponses: Array<{ mbtiEventId?: unknown; responseStatus?: string }>,
   minimumRecordedEvents = MBTI_MIN_RECORDED_EVENTS_FOR_FINAL_REPORT,
+  userEvidenceEventIds?: Iterable<unknown>,
 ) {
   const batchRecorded = plannedEventsReadyForFinalReport(
     events.map((event) => ({ _id: String(event._id) })),
@@ -958,7 +959,7 @@ export function finalReportReadiness(
       mbtiEventId: event.mbtiEventId ? String(event.mbtiEventId) : undefined,
     })),
   );
-  const answerReadiness = answerPositionReadiness(events, socialEvents, userResponses);
+  const answerReadiness = answerPositionReadiness(events, socialEvents, userResponses, userEvidenceEventIds);
   const hasOpenProbe = events.some((event) => event.status && OPEN_TIMELINE_PROBE_STATUSES.has(event.status));
   const hasEnoughRecordedEvents = answerReadiness.recordedEventCount >= minimumRecordedEvents;
   if (answerReadiness.ready && hasEnoughRecordedEvents && !hasOpenProbe) {
@@ -997,13 +998,8 @@ export function answerPositionReadiness(
   events: Array<{ _id: unknown; status?: string; testedVariable?: string }>,
   socialEvents: Array<{ mbtiEventId?: unknown }>,
   userResponses: Array<{ mbtiEventId?: unknown; responseStatus?: string }>,
+  userEvidenceEventIds?: Iterable<unknown>,
 ) {
-  const recordedEventIds = new Set(
-    socialEvents
-      .map((event) => event.mbtiEventId)
-      .filter(Boolean)
-      .map(String),
-  );
   const respondedEventIds = new Set(
     userResponses
       .filter((response) => response.responseStatus === 'responded')
@@ -1011,6 +1007,17 @@ export function answerPositionReadiness(
       .filter(Boolean)
       .map(String),
   );
+  const recordedEventIds = userEvidenceEventIds
+    ? new Set([...userEvidenceEventIds].filter(Boolean).map(String))
+    : new Set(
+        socialEvents
+          .map((event) => event.mbtiEventId)
+          .filter(Boolean)
+          .map(String),
+      );
+  for (const eventId of respondedEventIds) {
+    recordedEventIds.add(eventId);
+  }
   const recordedEvents = events.filter((event) => recordedEventIds.has(String(event._id)));
   const testedVariables = new Set(
     recordedEvents
@@ -1031,6 +1038,39 @@ export function answerPositionReadiness(
     respondedEventCount,
     testedVariableCount,
   };
+}
+
+export function userSideEvidenceEventIds(args: {
+  eventEvidence?: Array<{ kind: string; mbtiEventId?: unknown; participantIds?: unknown[] }>;
+  behaviorEvents?: Array<{ mbtiEventId?: unknown; playerId?: unknown }>;
+  userResponses?: Array<{ mbtiEventId?: unknown; responseStatus?: string }>;
+  playerNameById?: Record<string, string>;
+}) {
+  const selfPlayerIds = new Set(
+    Object.entries(args.playerNameById ?? {})
+      .filter(([, name]) => name === '我')
+      .map(([id]) => id),
+  );
+  const ids = new Set<string>();
+  for (const response of args.userResponses ?? []) {
+    if (response.responseStatus === 'responded' && response.mbtiEventId) {
+      ids.add(String(response.mbtiEventId));
+    }
+  }
+  for (const evidence of args.eventEvidence ?? []) {
+    if (evidence.kind === 'social_event' || !evidence.mbtiEventId) {
+      continue;
+    }
+    if ((evidence.participantIds ?? []).some((id) => selfPlayerIds.has(String(id)))) {
+      ids.add(String(evidence.mbtiEventId));
+    }
+  }
+  for (const behavior of args.behaviorEvents ?? []) {
+    if (behavior.mbtiEventId && behavior.playerId && selfPlayerIds.has(String(behavior.playerId))) {
+      ids.add(String(behavior.mbtiEventId));
+    }
+  }
+  return ids;
 }
 
 function isHighSignalProbe(event: Doc<'mbtiEvents'>) {
@@ -1727,8 +1767,28 @@ export const recordTriggeredSceneEvent = internalMutation({
         .query('mbtiUserResponses')
         .withIndex('experiment_time', (q) => q.eq('experimentId', args.experimentId))
         .collect();
+      const eventEvidence = await ctx.db
+        .query('mbtiEventEvidence')
+        .withIndex('world_time', (q) => q.eq('worldId', args.worldId))
+        .collect();
+      const behaviorEvents = await ctx.db
+        .query('mbtiBehaviorEvents')
+        .withIndex('world_time', (q) => q.eq('worldId', args.worldId))
+        .collect();
+      const playerDescriptions = await ctx.db
+        .query('playerDescriptions')
+        .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
+        .collect();
+      const userEvidenceIds = userSideEvidenceEventIds({
+        behaviorEvents,
+        eventEvidence,
+        playerNameById: Object.fromEntries(
+          playerDescriptions.map((description) => [description.playerId, description.name]),
+        ),
+        userResponses,
+      });
       const minimumRecordedEvents = minimumFinalReportEventCount(experiment.observation.targetEventCount);
-      if (finalReportReadiness(events, socialEvents, userResponses, minimumRecordedEvents).ready) {
+      if (finalReportReadiness(events, socialEvents, userResponses, minimumRecordedEvents, userEvidenceIds).ready) {
         await ctx.scheduler.runAfter(MBTI_FINALIZE_AFTER_ALL_EVENTS_DELAY_MS, internal.mbti.finalizeExperiment, {
           experimentId: args.experimentId,
         });
@@ -3320,18 +3380,33 @@ export const experimentReadyForFinalReport = internalQuery({
       .query('mbtiUserResponses')
       .withIndex('experiment_time', (q) => q.eq('experimentId', experiment._id))
       .collect();
-    const recordedEventIds = new Set(
-      socialEvents
-        .map((event) => event.mbtiEventId)
-        .filter((eventId): eventId is Id<'mbtiEvents'> => Boolean(eventId)),
-    );
+    const eventEvidence = await ctx.db
+      .query('mbtiEventEvidence')
+      .withIndex('world_time', (q) => q.eq('worldId', experiment.worldId))
+      .collect();
+    const behaviorEvents = await ctx.db
+      .query('mbtiBehaviorEvents')
+      .withIndex('world_time', (q) => q.eq('worldId', experiment.worldId))
+      .collect();
+    const playerDescriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', experiment.worldId))
+      .collect();
+    const userEvidenceIds = userSideEvidenceEventIds({
+      behaviorEvents,
+      eventEvidence,
+      playerNameById: Object.fromEntries(
+        playerDescriptions.map((description) => [description.playerId, description.name]),
+      ),
+      userResponses,
+    });
     const minimumRecordedEvents = minimumFinalReportEventCount(experiment.observation.targetEventCount);
-    const readiness = finalReportReadiness(events, socialEvents, userResponses, minimumRecordedEvents);
+    const readiness = finalReportReadiness(events, socialEvents, userResponses, minimumRecordedEvents, userEvidenceIds);
     return {
       ready: readiness.ready,
       reason: readiness.reason,
       eventCount: events.length,
-      recordedEventCount: events.filter((event) => recordedEventIds.has(event._id)).length,
+      recordedEventCount: events.filter((event) => userEvidenceIds.has(String(event._id))).length,
       respondedEventCount: readiness.respondedEventCount,
       testedVariableCount: readiness.testedVariableCount,
       batchRecorded: readiness.batchRecorded,

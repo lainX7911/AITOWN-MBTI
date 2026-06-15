@@ -2469,7 +2469,8 @@ function QuestionGuidanceRail({
       .map((evidence) => ({
         playerId: evidence.participantIds[0] ?? '',
         text: evidence.summary,
-      }));
+      }))
+      .filter((behavior) => playerNameById.get(behavior.playerId) === '我');
     const matchedBehaviors = persistedBehaviors.length > 0
       ? persistedBehaviors
       : record
@@ -2515,10 +2516,13 @@ function QuestionGuidanceRail({
     if (item.event.probeOrigin === 'adaptive') {
       score += 5;
     }
-    if (item.matchedMessages.length > 0) {
+    if (item.matchedMessages.some((message) => playerNameById.get(message.author) === '我')) {
       score += 4;
     }
-    if (item.matchedBehaviors.length > 0 || item.matchedThoughts.length > 0) {
+    if (
+      item.matchedBehaviors.length > 0 ||
+      item.matchedThoughts.some((thought) => playerNameById.get(thought.playerId) === '我')
+    ) {
       score += 3;
     }
     if (/重大|关键|边界|误解|修复|分开|现金|合同|家庭|承诺|不可逆/.test(eventText)) {
@@ -2534,9 +2538,9 @@ function QuestionGuidanceRail({
         Boolean(item.record) &&
         (
           item.event.probeOrigin === 'calibration' ||
-          item.matchedMessages.length > 0 ||
+          item.matchedMessages.some((message) => playerNameById.get(message.author) === '我') ||
           item.matchedBehaviors.length > 0 ||
-          item.matchedThoughts.length > 0
+          item.matchedThoughts.some((thought) => playerNameById.get(thought.playerId) === '我')
         )
       )
       .sort((left, right) => calibrationPriority(right) - calibrationPriority(left))
@@ -2559,7 +2563,9 @@ function QuestionGuidanceRail({
   const recordedEvents = eventProgressEvidence.filter(({ record }) => !!record).length;
   const evidencedEvents = eventProgressEvidence.filter(
     ({ matchedBehaviors, matchedMessages, matchedThoughts }) =>
-      matchedMessages.length > 0 || matchedBehaviors.length > 0 || matchedThoughts.length > 0,
+      matchedMessages.some((message) => playerNameById.get(message.author) === '我') ||
+      matchedBehaviors.length > 0 ||
+      matchedThoughts.some((thought) => playerNameById.get(thought.playerId) === '我'),
   ).length;
   const runtimeSummary = summarizeEventRuntime(events);
   const nextRuntimeEvent = runtimeSummary.nextTimelineEvent;
@@ -3323,7 +3329,6 @@ function EventProgressCard({
     (trimmedFreeText ? `补充说明：${compactText(trimmedFreeText, 36)}` : '') ||
     (feedbackType !== 'user_reaction' ? feedbackTypeLabel(feedbackType) : '');
   const hasCalibrationAnswer = Boolean(effectiveSelectedOption);
-  const hasChatEvidence = matchedMessages.length > 0;
   const hasEventRecord = Boolean(recordedAt);
   const selfMessages = matchedMessages
     .filter((message) => playerNameById.get(message.author) === '我')
@@ -3331,6 +3336,7 @@ function EventProgressCard({
   const selfThoughts = matchedThoughts
     .filter((thought) => playerNameById.get(thought.playerId) === '我')
     .map((thought) => thought.text);
+  const hasChatEvidence = selfMessages.length > 0;
   const simulatedSelfReactions = [
     ...matchedBehaviors.map((behavior) => ({ kind: '动作', text: behavior.text })),
     ...selfMessages.map((text) => ({ kind: '说法', text })),
@@ -3346,7 +3352,7 @@ function EventProgressCard({
       isCalibrationCandidate: showCalibrationPrompt,
       manualCalibrationMode,
     });
-  const hasAuxiliaryEvidence = matchedThoughts.length > 0 || matchedBehaviors.length > 0;
+  const hasAuxiliaryEvidence = selfThoughts.length > 0 || matchedBehaviors.length > 0;
   const hasAnyEvidence = hasChatEvidence || hasAuxiliaryEvidence;
   const evidenceSignature = [
     ...matchedMessages.map((message) => `${message._id}:${message.text}`),

@@ -24,6 +24,7 @@ import {
   selectHardScheduledSceneEvents,
   shouldCreateTimelineGeneratedProbe,
   stagingPointForEventLocation,
+  userSideEvidenceEventIds,
 } from './mbti';
 
 describe('MBTI observation duration', () => {
@@ -217,6 +218,49 @@ describe('MBTI observation duration', () => {
       respondedEventCount: 0,
       testedVariableCount: 2,
     });
+  });
+
+  test('does not count event records as answer evidence without user-side evidence', () => {
+    const events = [
+      { _id: 'event-1', status: 'observed', testedVariable: '钱' },
+      { _id: 'event-2', status: 'observed', testedVariable: '时间' },
+      { _id: 'event-3', status: 'observed', testedVariable: '关系' },
+    ];
+    const socialEvents = [
+      { mbtiEventId: 'event-1' },
+      { mbtiEventId: 'event-2' },
+      { mbtiEventId: 'event-3' },
+    ];
+
+    expect(finalReportReadiness(events as any, socialEvents as any, [], 3, [])).toMatchObject({
+      ready: false,
+      reason: 'minimum-evidence-floor-not-met',
+      recordedEventCount: 0,
+      testedVariableCount: 0,
+    });
+  });
+
+  test('counts messages, behaviors, and direct user responses as user-side event evidence', () => {
+    const ids = userSideEvidenceEventIds({
+      behaviorEvents: [
+        { mbtiEventId: 'event-2', playerId: 'p-self' },
+        { mbtiEventId: 'event-other', playerId: 'p-other' },
+      ],
+      eventEvidence: [
+        { kind: 'message', mbtiEventId: 'event-1', participantIds: ['p-self'] },
+        { kind: 'message', mbtiEventId: 'event-other', participantIds: ['p-other'] },
+        { kind: 'social_event', mbtiEventId: 'event-record-only', participantIds: ['p-self'] },
+      ],
+      playerNameById: {
+        'p-other': '高声',
+        'p-self': '我',
+      },
+      userResponses: [
+        { mbtiEventId: 'event-3', responseStatus: 'responded' },
+      ],
+    });
+
+    expect([...ids].sort()).toEqual(['event-1', 'event-2', 'event-3']);
   });
 
   test('does not finalize while a generated timeline event is still waiting', () => {
