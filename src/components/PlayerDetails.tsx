@@ -407,27 +407,27 @@ export default function PlayerDetails({
 
 function ResidentLifeCard({ detail }: { detail: ResidentLifeDetail }) {
   return (
-    <section className="mt-4 border-4 border-brown-900 bg-white p-4 text-brown-900 shadow-solid">
-      <header className="mb-3">
-        <span className="block text-base font-black text-teal-700">个人状态</span>
-        <strong className="block text-xl leading-tight">{detail.residentName} · {detail.role}</strong>
+    <section className="resident-life-card mt-4">
+      <header className="resident-life-card__header">
+        <span>个人状态</span>
+        <strong>{detail.residentName} · {detail.role}</strong>
       </header>
-      <div className="grid gap-3 text-base leading-snug">
-        <div>
-          <b className="block text-teal-800">长期目标</b>
+      <div className="resident-life-card__body">
+        <div className="resident-life-card__section">
+          <b>长期目标</b>
           <p>{detail.longTermGoal}</p>
         </div>
-        <div>
-          <b className="block text-amber-800">当前压力</b>
+        <div className="resident-life-card__section" data-tone="pressure">
+          <b>当前压力</b>
           <p>{detail.currentPressure}</p>
         </div>
         {detail.currentIntent && (
-          <div>
-            <b className="block text-slate-700">短期意图</b>
+          <div className="resident-life-card__section" data-tone="intent">
+            <b>短期意图</b>
             <p>{detail.currentIntent}</p>
           </div>
         )}
-        <div className="grid gap-2">
+        <div className="resident-life-card__meters">
           <ResidentLifeMeter label="经济" value={detail.economy} />
           <ResidentLifeMeter label="事业" value={detail.career} />
           <ResidentLifeMeter label="社交" value={detail.social} />
@@ -435,7 +435,7 @@ function ResidentLifeCard({ detail }: { detail: ResidentLifeDetail }) {
           <ResidentLifeMeter label="压力" value={detail.stress} stress />
         </div>
         {detail.lastImpactReason && (
-          <p className="border-t border-brown-200 pt-2 text-sm font-bold text-brown-700">
+          <p className="resident-life-card__change">
             最近变化：{detail.lastImpactReason}
           </p>
         )}
@@ -455,15 +455,15 @@ function ResidentLifeMeter({
 }) {
   const safeValue = Math.max(0, Math.min(100, Math.round(value)));
   return (
-    <div className="grid grid-cols-[42px_1fr_32px] items-center gap-2 text-sm font-black">
+    <div className="resident-life-meter">
       <span>{label}</span>
-      <span className="block h-2 overflow-hidden border border-brown-300 bg-brown-100">
+      <span className="resident-life-meter__track">
         <i
-          className={`block h-full ${stress ? 'bg-amber-700' : 'bg-teal-700'}`}
+          className={stress ? 'resident-life-meter__bar resident-life-meter__bar--stress' : 'resident-life-meter__bar'}
           style={{ width: `${safeValue}%` }}
         />
       </span>
-      <em className="not-italic text-right">{safeValue}</em>
+      <em>{safeValue}</em>
     </div>
   );
 }

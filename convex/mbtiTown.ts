@@ -964,7 +964,6 @@ async function townCounts(ctx: QueryCtx | MutationCtx, townId: Id<'mbtiTownProfi
       residentDevelopment: residents
         .filter((resident) => resident.status === 'active')
         .sort((a, b) => residentDevelopmentSortScore(b) - residentDevelopmentSortScore(a))
-        .slice(0, 6)
         .map((resident) => {
           const profile = residentLifeProfileOrFallback(resident);
           return {
