@@ -18,10 +18,10 @@ describe('MBTI town event planner cleanup', () => {
   });
 
   test('requests small initial event batches and only asks for missing supplements', () => {
-    expect(eventPlanCandidateCountForBatch(7, 0, 1)).toBe(10);
-    expect(eventPlanCandidateCountForBatch(7, 5, 2)).toBe(6);
-    expect(eventPlanCandidateCountForBatch(12, 0, 1)).toBe(12);
-    expect(eventPlanCandidateCountForBatch(12, 9, 2)).toBe(7);
+    expect(eventPlanCandidateCountForBatch(3, 0, 1)).toBe(4);
+    expect(eventPlanCandidateCountForBatch(3, 2, 2)).toBe(3);
+    expect(eventPlanCandidateCountForBatch(12, 0, 1)).toBe(6);
+    expect(eventPlanCandidateCountForBatch(12, 9, 2)).toBe(5);
   });
 
   test('merges supplemental event batches without duplicating accepted event titles', () => {
@@ -305,7 +305,7 @@ describe('MBTI town event planner cleanup', () => {
     expect(plans?.map((plan) => plan.locationKey)).toEqual(['office', 'station', 'shop']);
   });
 
-  test('rejects event plans that do not declare coverage for required validation targets', () => {
+  test('infers validation coverage from concrete event text when ids are missing', () => {
     const plans = cleanEventPlans(
       [
         {
@@ -330,6 +330,39 @@ describe('MBTI town event planner cleanup', () => {
         },
       ],
       ['经济边界', '身体照护'],
+      [
+        {
+          id: 'target_money',
+          label: '经济边界',
+          source: 'decisionDimension',
+          priority: 'must',
+          whatWouldTestIt: '测试用户是否会把退休金、共同支出和个人财产边界说清楚。',
+        },
+      ],
+    );
+
+    expect(plans?.[0].coveredTargetIds).toEqual(['target_money']);
+    expect(plans?.[0].whyThisTestsIt).toContain('退休金');
+  });
+
+  test('rejects event plans that do not cover required validation targets', () => {
+    const plans = cleanEventPlans(
+      [
+        {
+          title: '咖啡馆闲聊',
+          severity: '日常',
+          locationKey: 'cafe',
+          scene: '晨桥咖啡馆里，我和常驻居民A正在聊天。',
+          trigger: '我点了一杯咖啡，常驻居民A问我今天心情怎么样。',
+          participants: ['我', '常驻居民A'],
+          observationAxis: '日常情绪',
+          questionLink: '观察日常情绪。',
+          informationGoal: '看我是否愿意聊天。',
+          judgmentSignal: '能接话偏开放。',
+          responseOptions: ['我继续聊天', '我换个话题', '我先离开'],
+        },
+      ],
+      ['经济边界'],
       [
         {
           id: 'target_money',

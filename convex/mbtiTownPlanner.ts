@@ -482,9 +482,9 @@ export function eventPlanCandidateCountForBatch(
 ) {
   const missing = Math.max(0, requiredEventPlanCount - acceptedCount);
   if (batch <= 1) {
-    return Math.min(12, Math.max(requiredEventPlanCount + 3, 8));
+    return Math.min(6, Math.max(requiredEventPlanCount + 1, 3));
   }
-  return Math.min(10, Math.max(missing + 4, 5));
+  return Math.min(6, Math.max(missing + 2, 3));
 }
 
 export function mergeDistinctEventPlans(
@@ -1428,15 +1428,31 @@ export function cleanEventPlans(
         `观察用户在“${observationAxis}”受压时会如何取舍。`;
       const judgmentSignal = cleanRequiredString(raw.judgmentSignal, 100) ??
         `看用户是否能提出具体边界、主动核对事实或调整安排。`;
-      const coveredTargetIds = cleanPlannerList(raw.coveredTargetIds, [], 1, 4, 48)
-        .filter((id) => targetMap.has(id));
-      const whyThisTestsIt = cleanRequiredString(raw.whyThisTestsIt, 160);
       const responseOptions = cleanResponseOptions(raw.responseOptions) ??
         fallbackResponseOptions(observationAxis);
       const stakes = cleanEventStakes(raw.stakes) ?? fallbackEventStakes(trigger ?? '', observationAxis);
       const consequenceOptions = cleanConsequenceOptions(raw.consequenceOptions) ??
         fallbackConsequenceOptions(responseOptions, observationAxis);
       const text = [title, scene, trigger, questionLink, informationGoal, judgmentSignal].join(' ');
+      const coverageText = [
+        text,
+        trigger,
+        observationAxis,
+        responseOptions.join(' '),
+        cleanRequiredString(raw.whyThisTestsIt, 160) ?? '',
+        Object.values(stakes ?? {}).join(' '),
+      ].join(' ');
+      const declaredTargetIds = cleanPlannerList(raw.coveredTargetIds, [], 1, 4, 48)
+        .filter((id) => targetMap.has(id));
+      const inferredTargetIds = inferValidationTargetIds(coverageText, targetMap);
+      const coveredTargetIds = mergeTargetIds(declaredTargetIds, inferredTargetIds)
+        .filter((id) => {
+          const target = targetMap.get(id);
+          return target ? textAlignsWithValidationTarget(coverageText, target) : false;
+        })
+        .slice(0, 4);
+      const whyThisTestsIt = cleanRequiredString(raw.whyThisTestsIt, 160) ??
+        fallbackWhyThisTestsIt(coveredTargetIds, targetMap, observationAxis);
       if (
         !title ||
         !scene ||
@@ -1449,14 +1465,7 @@ export function cleanEventPlans(
           coveredTargetIds,
           whyThisTestsIt,
           targetMap,
-          text: [
-            text,
-            trigger,
-            observationAxis,
-            responseOptions.join(' '),
-            whyThisTestsIt ?? '',
-            Object.values(stakes ?? {}).join(' '),
-          ].join(' '),
+          text: coverageText,
         })
       ) {
         return null;
@@ -1506,6 +1515,51 @@ function eventPlanSatisfiesValidationTargets(args: {
     const target = args.targetMap.get(id);
     return target ? textAlignsWithValidationTarget(args.text, target) : false;
   });
+}
+
+function mergeTargetIds(first: string[], second: string[]) {
+  const merged: string[] = [];
+  for (const id of [...first, ...second]) {
+    if (!merged.includes(id)) {
+      merged.push(id);
+    }
+  }
+  return merged;
+}
+
+function inferValidationTargetIds(text: string, targetMap: Map<string, ValidationTargetInput>) {
+  if (targetMap.size === 0) {
+    return [];
+  }
+  return [...targetMap.values()]
+    .filter((target) => textAlignsWithValidationTarget(text, target))
+    .sort((left, right) => validationTargetPriorityRank(left.priority) - validationTargetPriorityRank(right.priority))
+    .map((target) => target.id);
+}
+
+function validationTargetPriorityRank(priority: ValidationTargetInput['priority']) {
+  switch (priority) {
+    case 'must':
+      return 0;
+    case 'should':
+      return 1;
+    default:
+      return 2;
+  }
+}
+
+function fallbackWhyThisTestsIt(
+  coveredTargetIds: string[],
+  targetMap: Map<string, ValidationTargetInput>,
+  observationAxis: string,
+) {
+  const target = coveredTargetIds
+    .map((id) => targetMap.get(id))
+    .find((item): item is ValidationTargetInput => Boolean(item));
+  if (!target) {
+    return undefined;
+  }
+  return `这个事件通过“${observationAxis}”测试：${target.whatWouldTestIt}`;
 }
 
 function eventPlanBatchCoversMustTargets(
