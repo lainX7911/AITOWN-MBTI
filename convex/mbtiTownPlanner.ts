@@ -131,6 +131,37 @@ function startupQuestionCountForEvents(targetEventCount: number | undefined) {
   return Math.min(5, Math.max(4, Math.ceil(count / 5)));
 }
 
+export function requiredStartupQuestionCountForQuestion(question: string, targetEventCount: number | undefined) {
+  const baseCount = startupQuestionCountForEvents(targetEventCount);
+  const complexityScore = questionComplexityScore(question);
+  if (complexityScore >= 8) {
+    return Math.max(baseCount, 8);
+  }
+  if (complexityScore >= 5) {
+    return Math.max(baseCount, 6);
+  }
+  if (complexityScore >= 3) {
+    return Math.max(baseCount, 4);
+  }
+  return baseCount;
+}
+
+function questionComplexityScore(question: string) {
+  const signals = [
+    /退休|养老|晚年|老年/,
+    /老家|回乡|搬家|同住|住处|房子|居住|两地/,
+    /伴侣|结婚|再婚|相亲|关系|前任|离婚|配偶|对象/,
+    /孩子|子女|儿子|女儿|父母|母亲|父亲|家庭|照护|赡养/,
+    /钱|退休金|存款|收入|财产|房产|债务|费用|经济/,
+    /健康|慢性病|身体|医疗|照护|复诊/,
+    /工作|职业|创业|合同|收入|辞职|学业/,
+    /身份|户口|法律|签证|资格|社保|医保/,
+    /社交|朋友|邻里|社会评价|孤独|圈子/,
+    /长期|未来|几年|人生|选择|适不适合|要不要/,
+  ];
+  return signals.reduce((score, pattern) => score + (pattern.test(question) ? 1 : 0), 0);
+}
+
 export function requiredEventPlanCountForTarget(targetEventCount: number | undefined) {
   const target = Math.max(1, Math.floor(targetEventCount ?? 6));
   if (target <= 1) {
@@ -189,6 +220,11 @@ type ValidationTargetInput = {
   priority: 'must' | 'should' | 'optional';
   whatWouldTestIt: string;
   badEventPattern?: string;
+};
+
+type AssumptionContextInput = {
+  question: string;
+  startupAnswers?: StartupAnswerInput[];
 };
 
 type ReasonablenessDiscussionInput = {
@@ -283,7 +319,7 @@ export const planStartupQuestions = action({
     targetEventCount: v.optional(v.number()),
   },
   handler: async (_ctx, args) => {
-    const requiredStartupQuestionCount = startupQuestionCountForEvents(args.targetEventCount);
+    const requiredStartupQuestionCount = requiredStartupQuestionCountForQuestion(args.question, args.targetEventCount);
     const planningResult = await planQuestionSkeletonWithRetries(
       args.question,
       requiredStartupQuestionCount,
@@ -317,7 +353,7 @@ export const planAndCreateSceneRequest = action({
     startupAnswers: v.optional(v.array(startupAnswer)),
   },
   handler: async (ctx, args) => {
-    const requiredStartupQuestionCount = startupQuestionCountForEvents(args.targetEventCount);
+    const requiredStartupQuestionCount = requiredStartupQuestionCountForQuestion(args.question, args.targetEventCount);
     const requiredEventPlanCount = requiredEventPlanCountForTarget(args.targetEventCount);
     const skeleton = args.plannedFocus?.startupQuestions?.length
       ? stripEventPlans(args.plannedFocus)
@@ -541,6 +577,8 @@ async function planQuestionSkeleton(
           'decisionStructure 必须达到最低数量：decisionDimensions 6-10 个，personalityLevers 3-8 个，unknowns 4-10 个，hiddenNeeds 3-8 个，riskBlindspots 3-8 个，possiblePaths 2-6 个，changeConditions 3-8 个，nextValidationQuestions 3-8 个。不要只给 2-3 条。',
           '拆解维度必须覆盖现实属性，不只覆盖心理属性。根据问题相关性纳入：年龄/阶段、外貌或吸引力、身体健康、金钱、住处、家庭责任、法律/身份、时间精力、社会评价、长期退出成本等具体变量。',
           'startupQuestions 必须直白、生活化、能马上回答，必须直接服务用户原问题。',
+          '如果理解用户问题或后续演化需要更多现实信息，就必须提出更多启动问题；可以询问用户现状、关系状态、性别/身份、是否有子女、健康、经济、住处、家庭责任、时间安排等，但只能问与原问题必要相关的内容。',
+          '涉及性别、婚史、子女、家庭责任、健康、钱和住处时，不能根据年龄、退休、单身、老家等词自行推断；必须通过 startupQuestions 让用户明确回答，或在事件里保持待确认。',
           'startupQuestions 不能出现“信息不足时的反应、标准构建方式、行动导向、资源评估、情绪稳定性、现实检验能力”等分析术语。',
           'startupQuestions 的选项必须每题不同、具体、互斥，不能使用“稳住基本盘、争取自主、过渡方案”等抽象策略词。',
           '如果 startupQuestions 问的是“三件事、两件事、几个、哪些、优先级清单”等复数答案，必须设置 maxSelections 为对应数量或 3；选项必须是可组合的具体事项。',
@@ -552,7 +590,7 @@ async function planQuestionSkeleton(
         role: 'user',
         content: [
           `用户问题：${question}`,
-          `生成尝试：第 ${attempt} 次。请生成正好 ${requiredStartupQuestionCount} 个合格 startupQuestions。`,
+          `生成尝试：第 ${attempt} 次。请生成正好 ${requiredStartupQuestionCount} 个合格 startupQuestions；如果数量较多，要优先覆盖用户现状、个人/家庭事实和会影响事件真实性的关键条件。`,
           '输出 JSON 字段：',
           '{',
           '  "drivingTension": "一句自然的处境张力，不直接复述用户问题",',
@@ -727,6 +765,7 @@ async function planQuestionEvents(
             '你必须把用户的启动前真实回答作为事件设计的方向盘：事件的主题、顺序、强度和冲突点都要受这些回答影响。',
             '如果用户回答表达了偏好、底线、不能接受的条件或生活方式，前几个事件必须直接测试这些偏好和底线。',
             '如果事件里出现了用户没有声明过的既成事实、人物关系、生活条件、资源状态或限制条件，必须先把它改成待验证情境，不能当作真实背景。',
+            '严禁替用户编造身份和家庭事实：没有明确说性别，就不能写前夫/前妻/丈夫/妻子等性别化关系；没有明确说有孩子，就不能写孩子、子女、儿子、女儿或孩子旧物；用户说单身不等于可以推断曾婚、离异或有子女。',
             '不要生成与启动前回答无关的事件；不要把回答只当背景文字。',
             '事件必须像用户现实生活里会发生的一幕，而不是小镇设施的任务清单。先从用户处境推导真实生活压力，再把它放进小镇地点。',
             '标题必须写本次用户问题里的核心生活变量，不要写成设施名加普通事务。',
@@ -807,7 +846,10 @@ async function planQuestionEvents(
   if (!parsed) {
       return { issues: ['模型输出不是可解析 JSON'] };
   }
-  const eventPlans = cleanEventPlans(parsed.eventPlans, skeleton.analysisDimensions, skeleton.validationTargets);
+  const eventPlans = cleanEventPlans(parsed.eventPlans, skeleton.analysisDimensions, skeleton.validationTargets, {
+    question,
+    startupAnswers,
+  });
   if (!eventPlans || eventPlans.length === 0) {
     const rawCount = Array.isArray(parsed.eventPlans) ? parsed.eventPlans.length : 0;
     return { issues: [`本批没有合格事件：原始 ${rawCount} 个`] };
@@ -1403,6 +1445,7 @@ export function cleanEventPlans(
   value: unknown,
   analysisDimensions: string[],
   validationTargets?: ValidationTargetInput[],
+  assumptionContext?: AssumptionContextInput,
 ): QuestionFocusInput['eventPlans'] {
   if (!Array.isArray(value)) {
     return undefined;
@@ -1460,6 +1503,7 @@ export function cleanEventPlans(
         participants.length === 0 ||
         isGenericTownErrandEvent(text) ||
         !hasConcreteLifeAnchor(trigger) ||
+        hasUnsupportedUserAssumption(coverageText, assumptionContext) ||
         !eventPlanSatisfiesValidationTargets({
           requiresCoverage,
           coveredTargetIds,
@@ -1560,6 +1604,61 @@ function fallbackWhyThisTestsIt(
     return undefined;
   }
   return `这个事件通过“${observationAxis}”测试：${target.whatWouldTestIt}`;
+}
+
+function hasUnsupportedUserAssumption(text: string, context: AssumptionContextInput | undefined) {
+  if (!context) {
+    return false;
+  }
+  const source = assumptionSourceText(context);
+  if (mentionsUserChildren(text) && !sourceAllowsUserChildren(source)) {
+    return true;
+  }
+  if (mentionsUserExSpouse(text) && !sourceAllowsUserExSpouse(source)) {
+    return true;
+  }
+  if (mentionsGenderedSpouseRole(text) && !sourceAllowsGenderedSpouseRole(source)) {
+    return true;
+  }
+  return false;
+}
+
+function assumptionSourceText(context: AssumptionContextInput) {
+  return [
+    context.question,
+    ...(context.startupAnswers ?? []).flatMap((answer) => [
+      answer.question,
+      answer.answer,
+      answer.note ?? '',
+    ]),
+  ].join(' ');
+}
+
+function mentionsUserChildren(text: string) {
+  return /孩子|小孩|子女|儿子|女儿|儿女|孩童/.test(text);
+}
+
+function sourceAllowsUserChildren(source: string) {
+  if (/没有\s*(孩子|小孩|子女|儿子|女儿)|无\s*(孩子|小孩|子女)|无子女|未育|没\s*(孩子|小孩)/.test(source)) {
+    return false;
+  }
+  return /孩子|小孩|子女|儿子|女儿|儿女/.test(source);
+}
+
+function mentionsUserExSpouse(text: string) {
+  return /前夫|前妻|前任丈夫|前任妻子|前配偶|离异|离婚后|前一段婚姻/.test(text);
+}
+
+function sourceAllowsUserExSpouse(source: string) {
+  return /前夫|前妻|前任丈夫|前任妻子|前配偶|离异|离婚|再婚|前一段婚姻/.test(source);
+}
+
+function mentionsGenderedSpouseRole(text: string) {
+  return /丈夫|妻子|老公|老婆|先生|太太/.test(text);
+}
+
+function sourceAllowsGenderedSpouseRole(source: string) {
+  return /丈夫|妻子|老公|老婆|先生|太太|男|女|性别/.test(source);
 }
 
 function eventPlanBatchCoversMustTargets(

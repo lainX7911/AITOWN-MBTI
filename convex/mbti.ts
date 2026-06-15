@@ -1227,7 +1227,7 @@ export const triggerSceneEvent = internalAction({
       status: 'moving',
     });
     const rawParticipantNames = (payload.event.involvedRoles as string[]).map(displayParticipantName);
-    const participantNames = Array.from(new Set(rawParticipantNames)).slice(0, 3);
+    const participantNames = normalizeSceneEventParticipantNames(rawParticipantNames);
     await ctx.runMutation(api.aiTown.main.sendInput, {
       worldId: payload.experiment.worldId,
       name: 'moveMbtiEventParticipants',
@@ -1263,7 +1263,7 @@ export const realizeSceneEvent = internalAction({
       return null;
     }
     const rawParticipantNames = (payload.event.involvedRoles as string[]).map(displayParticipantName);
-    const participantNames = Array.from(new Set(rawParticipantNames)).slice(0, 3);
+    const participantNames = normalizeSceneEventParticipantNames(rawParticipantNames);
     await ctx.runMutation(api.aiTown.main.sendInput, {
       worldId: payload.experiment.worldId,
       name: 'applyMbtiSceneActivity',
@@ -1273,11 +1273,9 @@ export const realizeSceneEvent = internalAction({
       },
     });
     const focusPartner = participantNames.find((name) => name !== '我');
-    const focusParticipants = participantNames.includes('我')
-      ? ['我', focusPartner].filter(
-          (name): name is string => Boolean(name),
-        )
-      : [];
+    const focusParticipants = ['我', focusPartner].filter(
+      (name): name is string => Boolean(name),
+    );
     if (focusParticipants.length === 2) {
       await ctx.runMutation(internal.mbti.updateEventStatus, {
         eventId: args.eventId,
@@ -5743,6 +5741,18 @@ function normalizeParticipantName(participant: string) {
 
 function displayParticipantName(participant: string) {
   return normalizeParticipantName(participant) === 'self' ? '我' : participant;
+}
+
+export function normalizeSceneEventParticipantNames(participants: string[]) {
+  const normalized = participants
+    .map((participant) => displayParticipantName(participant).trim())
+    .filter(Boolean);
+  const unique = Array.from(new Set(normalized));
+  const nonSelf = unique.filter((name) => name !== '我');
+  const focusPartner = nonSelf[0] ?? '常驻居民';
+  return ['我', focusPartner, ...nonSelf.slice(1)]
+    .filter((name, index, list) => list.indexOf(name) === index)
+    .slice(0, 3);
 }
 
 export function deterministicSeed(...parts: string[]) {

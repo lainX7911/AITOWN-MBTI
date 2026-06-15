@@ -6,6 +6,7 @@ import {
   formatRejectedAuthenticityPatterns,
   limitEventPlansToRequired,
   mergeDistinctEventPlans,
+  requiredStartupQuestionCountForQuestion,
   requiredEventPlanCountForTarget,
 } from './mbtiTownPlanner';
 
@@ -22,6 +23,17 @@ describe('MBTI town event planner cleanup', () => {
     expect(eventPlanCandidateCountForBatch(3, 2, 2)).toBe(3);
     expect(eventPlanCandidateCountForBatch(12, 0, 1)).toBe(6);
     expect(eventPlanCandidateCountForBatch(12, 9, 2)).toBe(5);
+  });
+
+  test('asks more startup questions for long-term life decisions with many personal unknowns', () => {
+    expect(requiredStartupQuestionCountForQuestion(
+      '我退休后适不适合回岳阳老家生活？需要考虑健康、家庭、住处、钱和社交。',
+      6,
+    )).toBeGreaterThanOrEqual(6);
+  });
+
+  test('keeps simple startup calibration short', () => {
+    expect(requiredStartupQuestionCountForQuestion('我今天要不要去参加朋友聚会？', 6)).toBe(2);
   });
 
   test('merges supplemental event batches without duplicating accepted event titles', () => {
@@ -375,6 +387,82 @@ describe('MBTI town event planner cleanup', () => {
     );
 
     expect(plans).toBeUndefined();
+  });
+
+  test('rejects invented children or ex-spouse facts when the user only said they are single', () => {
+    const plans = (cleanEventPlans as any)(
+      [
+        {
+          title: '老宅断舍离与空间重构',
+          severity: '中等',
+          locationKey: 'school',
+          scene: '旧校舍里，我和常驻居民A正在整理返乡后的旧物。',
+          trigger: '我回到岳阳老宅，面对堆积如山的旧物，包括前夫留下的物品、孩子儿时的玩具和自己多年未整理的资料。',
+          participants: ['我', '常驻居民A'],
+          observationAxis: '居住空间边界',
+          questionLink: '测试回老家后是否能处理生活空间和旧关系边界。',
+          informationGoal: '看我会不会先确认哪些旧物真实属于自己。',
+          judgmentSignal: '能区分现实资料和假设关系偏稳定。',
+          responseOptions: ['我先整理自己的资料', '我暂停处理关系物品', '我请人帮忙分类'],
+        },
+      ],
+      ['居住空间边界'],
+      [
+        {
+          id: 'target_home',
+          label: '居住空间边界',
+          source: 'decisionDimension',
+          priority: 'must',
+          whatWouldTestIt: '测试用户回老家后是否能处理住处、旧物和个人空间边界。',
+        },
+      ],
+      {
+        question: '我退休后适不适合回岳阳老家生活？',
+        startupAnswers: [
+          { question: '你现在的关系状态是什么？', answer: '单身' },
+        ],
+      },
+    );
+
+    expect(plans).toBeUndefined();
+  });
+
+  test('keeps child-related event facts only when the user explicitly provided children', () => {
+    const plans = (cleanEventPlans as any)(
+      [
+        {
+          title: '子女探望与老家时间安排',
+          severity: '中等',
+          locationKey: 'station',
+          scene: '车站里，我和常驻居民A正在核对子女探望和回老家的车次。',
+          trigger: '我计划退休后回岳阳老家，但孩子希望我每月留出一个周末回长沙看他，这会影响老家生活节奏。',
+          participants: ['我', '常驻居民A'],
+          observationAxis: '家庭责任和居住节奏',
+          questionLink: '测试回老家生活能否兼顾家庭责任和个人节奏。',
+          informationGoal: '看我会不会把子女探望和老家生活安排说清。',
+          judgmentSignal: '能说清固定探望频率偏现实；只说到时候再看偏不稳定。',
+          responseOptions: ['我先定每月探望频率', '我请孩子说明真实需求', '我暂缓搬回老家'],
+        },
+      ],
+      ['家庭责任和居住节奏'],
+      [
+        {
+          id: 'target_family',
+          label: '家庭责任和居住节奏',
+          source: 'decisionDimension',
+          priority: 'must',
+          whatWouldTestIt: '测试用户是否能把子女探望和回老家生活节奏安排清楚。',
+        },
+      ],
+      {
+        question: '我退休后适不适合回岳阳老家生活？',
+        startupAnswers: [
+          { question: '你有哪些家庭责任？', answer: '有一个孩子在长沙' },
+        ],
+      },
+    );
+
+    expect(plans?.[0].title).toBe('子女探望与老家时间安排');
   });
 
   test('requires cleaned event batches to cover every must validation target', () => {

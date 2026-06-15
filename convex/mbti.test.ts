@@ -12,6 +12,7 @@ import {
   finalReportReadiness,
   minimumFinalReportEventCount,
   normalizeEventParticipantPlan,
+  normalizeSceneEventParticipantNames,
   normalizeObservationDuration,
   plannedEventsReadyForFinalReport,
   plannedSceneEventTriggerDelays,
@@ -432,6 +433,12 @@ describe('MBTI observation duration', () => {
     expect(trigger).toContain('意向对象问我');
     expect(trigger).toContain('林遥提醒');
     expect(trigger).not.toMatch(/(^|[，。；、\s])[AB](?=问|说|提到|提醒)/);
+  });
+
+  test('anchors triggered scene events to the user and one focus participant', () => {
+    expect(normalizeSceneEventParticipantNames(['高声', '宋迟'])).toEqual(['我', '高声', '宋迟']);
+    expect(normalizeSceneEventParticipantNames(['用户', '高声', '宋迟', '陈桥'])).toEqual(['我', '高声', '宋迟']);
+    expect(normalizeSceneEventParticipantNames(['self'])).toEqual(['我', '常驻居民']);
   });
 
   test('describes candidate date as an intention object in self identity, not current partner', () => {
